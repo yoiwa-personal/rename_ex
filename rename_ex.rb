@@ -3,7 +3,7 @@ require 'fiddle'
 require 'fiddle/import'
 require 'forwardable'
 
-module RENAME_EX_INTERNAL_
+module RenameEx
   RENAME_NOREPLACE = 1
   RENAME_EXCHANGE = 2
   
@@ -14,18 +14,19 @@ module RENAME_EX_INTERNAL_
       dlload "libc.so.6"
       extern "int renameat2(int, const char *, int, const char *, unsigned int)"
     end
-    AT_FDSWD = -100
+    private_constant :LIBC
+    AT_FDCWD = -100
 
     FILESYSTEM_ENCODING = Encoding.find("filesystem")
+    private_constant :FILESYSTEM_ENCODING
 
-    def _fnencode(fname)
+    def self._fnencode(fname)
       fname.encode(FILESYSTEM_ENCODING)
     end
-    module_function :_fnencode
 
-    def _os_renameat2(olddirfd, oldpath, newdirfd, newpath, flags)
-      oldb = _fnencode(oldpath)
-      newb = _fnencode(newpath)
+    def self._os_renameat2(olddirfd, oldpath, newdirfd, newpath, flags)
+      oldb = self._fnencode(oldpath)
+      newb = self._fnencode(newpath)
 
       r = LIBC::renameat2(olddirfd, oldb, newdirfd, newb, flags)
       if r == -1
@@ -33,11 +34,10 @@ module RENAME_EX_INTERNAL_
       end
       return r
     end
-    module_function :_os_renameat2
     renameat2_supported = true
   end
   
-  def _rename_exchange_generic_by_rename(from, to)
+  def self._rename_exchange_generic_by_rename(from, to)
     tmpisdir = FileTest.directory?(from)
     
     basedir = File.dirname(to)
@@ -93,7 +93,7 @@ module RENAME_EX_INTERNAL_
     end
   end
 
-  def _rename_exchange_generic(from, to)
+  def self._rename_exchange_generic(from, to)
     dir_from = File.dirname(from)
     dir_to = File.dirname(to)
 
@@ -109,7 +109,7 @@ module RENAME_EX_INTERNAL_
     end
 
     if fromstat.directory? or tostat.directory?
-      return _rename_exchange_generic_by_rename(from, to)
+      return self._rename_exchange_generic_by_rename(from, to)
     end
     
     tmpdir = Dir.mktmpdir("rename.", tmpdir=dir_to)
@@ -206,14 +206,14 @@ module RENAME_EX_INTERNAL_
       end
       return File.rename(from, to)
     elsif flags == RENAME_EXCHANGE
-      return _rename_exchange_generic(from, to)
+      return RenameEx._rename_exchange_generic(from, to)
     end
   end
 
   if renameat2_supported
-    def _renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
+    def renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
       if from_dir_fd == nil
-        from_dir_fd = AT_FDSWD
+        from_dir_fd = AT_FDCWD
       elsif from_dir_fd.is_a?(Dir)
         from_dir_fd = from_dir_fd.fineno
       elsif from_dir_fd.is_a?(Integer)
@@ -223,7 +223,7 @@ module RENAME_EX_INTERNAL_
       end
 
       if to_dir_fd == nil
-        to_dir_fd = AT_FDSWD
+        to_dir_fd = AT_FDCWD
       elsif to_dir_fd.is_a?(Dir)
         to_dir_fd = to_dir_fd.fineno
       elsif to_dir_fd.is_a?(Integer)
@@ -232,15 +232,13 @@ module RENAME_EX_INTERNAL_
         raise ValueError
       end
 
-      return _os_renameat2(from_dir_fd, from, to_dir_fd, to, flags)
+      return RenameEx._os_renameat2(from_dir_fd, from, to_dir_fd, to, flags)
     end
-    alias :renameat2 :_renameat2
   else
     alias :renameat2 :_renameat2_generic
   end
-  module_function :renameat2, :_renameat2_generic,
-                  :_rename_exchange_generic,
-                  :_rename_exchange_generic_by_rename
+  
+  module_function :renameat2, :_renameat2_generic
 
   def rename_noreplace(from, to, *, from_dir_fd:nil, to_dir_fd:nil)
     return renameat2(from, to,
@@ -255,15 +253,4 @@ module RENAME_EX_INTERNAL_
   end
   module_function :rename_noreplace
   module_function :rename_exchange
-end
-
-module RenameEx
-  extend Forwardable
-  [:renameat2, :rename_noreplace, :rename_exchange].each { |sym|
-    def_delegator(:RENAME_EX_INTERNAL_, sym)
-    module_function(sym)
-  }
-  [:RENAME_NOREPLACE, :RENAME_EXCHANGE].each { |sym|
-      const_set(sym, RENAME_EX_INTERNAL_.const_get(sym))
-  }
 end

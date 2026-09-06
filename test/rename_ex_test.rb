@@ -2,9 +2,9 @@
 
 require_relative '../rename_ex'
 
-$do_renameat2 = RenameEx.method(:renameat2)
-RENAME_NOREPLACE = RenameEx::RENAME_NOREPLACE
-RENAME_EXCHANGE = RenameEx::RENAME_EXCHANGE
+include RenameEx
+extend RenameEx
+$do_renameat2 = self.method(:renameat2)
 
 def write_file(env, fname, content)
   open(env.prefix + fname, "w") { |f|
@@ -247,10 +247,10 @@ if opt == 'linux'
 elsif opt == 'linux-fd'
   run_test(true)
 elsif opt == 'generic'
-  $do_renameat2 = RENAME_EX_INTERNAL_.method(:_renameat2_generic)
+  RenameEx.module_eval("module_function :_renameat2_generic")
+  $do_renameat2 = self.method(:_renameat2_generic)
   run_test(false)
 else
-  raise ArgumentError
+  p "unknown test"
+  exit 1
 end
-
-
