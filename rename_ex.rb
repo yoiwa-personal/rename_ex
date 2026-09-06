@@ -1,0 +1,269 @@
+require 'tempfile'
+require 'fiddle'
+require 'fiddle/import'
+require 'forwardable'
+
+module RENAME_EX_INTERNAL_
+  RENAME_NOREPLACE = 1
+  RENAME_EXCHANGE = 2
+  
+  if RUBY_PLATFORM.include?('-linux')
+    
+    module LIBC
+      extend Fiddle::Importer
+      dlload "libc.so.6"
+      extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+    end
+    AT_FDSWD = -100
+
+    FILESYSTEM_ENCODING = Encoding.find("filesystem")
+
+    def _fnencode(fname)
+      fname.encode(FILESYSTEM_ENCODING)
+    end
+    module_function :_fnencode
+
+    def _os_renameat2(olddirfd, oldpath, newdirfd, newpath, flags)
+      oldb = _fnencode(oldpath)
+      newb = _fnencode(newpath)
+
+      r = LIBC::renameat2(olddirfd, oldb, newdirfd, newb, flags)
+      if r == -1
+        raise SystemCallError.new(Fiddle::last_error())
+      end
+      return r
+    end
+    module_function :_os_renameat2
+    renameat2_supported = true
+  end
+  
+  def _rename_exchange_generic_by_rename(from, to)
+    tmpisdir = FileTest.directory?(from)
+    
+    basedir = File.dirname(to)
+    if tmpisdir
+      tmpname = Dir.mktmpdir("rename.", tmpdir: basedir)
+    else
+      file = Tempfile.create(basename="rename.", tmpdir: basedir, mode: 0o600)
+      tmpname = file.path
+      file.close
+    end
+
+    begin
+      File.rename(from, tmpname)
+    rescue RuntimeError => e
+      if tmpisdir
+        begin
+          Dir.rmdir(tmpname)
+        rescue RuntimeError => ee
+          warn "rename_exchange: rmdir(recovery) tmporary dir failed: #{ee}"
+        end
+      else
+        begin
+          File.delete(tmpname)
+        rescue RuntimeError => ee
+          warn "rename_exchange: unlink(recovery) tmporary file failed: #{ee}"
+        end
+        raise e
+      end
+    end
+
+    begin
+      File.rename(to, from)
+    rescue RuntimeError => e
+      begin
+        File.rename(tmpname, from)
+      rescue RuntimeError => ee
+        warn "rename_exchange: rename(recovery) 1 tmporary file failed: #{ee}"
+        raise e
+      end
+    end
+
+    begin
+      File.rename(tmpname, to)
+    rescue RuntimeError => e
+      begin
+        File.rename(from, to)
+        File.rename(tmpname, from)
+      rescue RuntimeError => ee
+        warn "rename_exchange: rename(recovery) 2 tmporary file failed:#{ee}: #{from} is left as #{tmporary}"
+        raise e
+        return
+      end
+    end
+  end
+
+  def _rename_exchange_generic(from, to)
+    dir_from = File.dirname(from)
+    dir_to = File.dirname(to)
+
+    if not (FileTest.writable?(dir_to) && FileTest.writable?(dir_from))
+      raise Errno::EPERM
+    end
+
+    fromstat = File.lstat(from)
+    tostat = File.lstat(to) # Pass-through FileNotFoundError and others
+
+    if fromstat.dev == tostat.dev && fromstat.ino == tostat.ino
+      return
+    end
+
+    if fromstat.directory? or tostat.directory?
+      return _rename_exchange_generic_by_rename(from, to)
+    end
+    
+    tmpdir = Dir.mktmpdir("rename.", tmpdir=dir_to)
+
+    tmpfrom = tmpdir + "/.exchange.from"
+    tmpto = tmpdir + "/.exchange.to"
+    
+    begin
+      File.link(from, tmpfrom)
+    rescue RuntimeError => e
+      begin
+        Dir.rmdir(tmpdir)
+      rescue RuntimeError => ee
+        warn("rename_exchange: cleaning tmpdir failed: #{ee}")
+      end
+      raise e
+    end
+
+    begin
+      File.link(to, tmpto)
+    rescue RuntimeError => e
+      begin
+        File.unlink(tmpfrom, dir_fd=tmp_dir_fd)
+        Dir.rmdir(tmpdir, dir_fd=tmp_dir_fd)
+      rescue RuntimeError => ee
+        warn("rename_exchange: cleaning tmpdir failed: #{ee}")
+      end
+      raise e
+    end
+
+    # critical section: files may be lost
+    begin
+      File.rename(tmpto, from)
+    rescue RuntimeError => e
+      # still safe...
+      begin
+        File.delete(tmpto)
+        File.delete(tmpfrom)
+        Dir.rmdir(tmpdir)
+      rescue RuntimeError => ee
+        warn("rename_exchange: cleaning tmpdir failed: #{ee}")
+      end
+      raise e
+    end
+    
+    begin
+      File.rename(tmpfrom, to)
+    # now safe
+    rescue RuntimeError => e
+      # in danger: from is about to lost
+      begin
+        File.rename(tmpfrom, from)
+      rescue RuntimeError => ee
+        warn("rename_exchange: rename for recovery failed: #{ee}: original file #{from} is left on #{tmpfrom}")
+        # don't touch on temporary directory!
+        raise e
+      end
+      # now safe: only tmpdir is exist
+      begin
+        Dir.rmdir(tmpdir)
+      rescue RuntimeError => ee
+        warn("rename_exchange: cleaning tmpdir failed: #{ee}")
+      end
+      raise
+    end
+
+    # here, the directory should be empty:
+    # however, if from and to are the same file, tmp files are left.
+    begin
+      begin
+        File.delete(tmpto)
+        File.delete(tmpfrom)
+      rescue Errno::ENOENT
+      end
+      Dir.rmdir(tmpdir)
+    rescue RuntimeError => ee
+      warn("rename_exchange: cleaning tmpdir failed: #{ee}")
+      raise ee
+    end
+  end
+
+  def _renameat2_generic(from, to, *, from_dir_fd:nil, to_dir_fd:nil, flags:0)
+    if from_dir_fd != nil or to_dir_fd != nil
+      raise RuntimeError.new("dir_fd emulation not available")
+    end
+    if flags == 0
+      return File.rename(from, to)
+    elsif flags == RENAME_NOREPLACE
+      begin
+        File.lstat(to)
+        raise Errno::EEXIST
+      rescue Errno::ENOENT
+        # ok
+      end
+      return File.rename(from, to)
+    elsif flags == RENAME_EXCHANGE
+      return _rename_exchange_generic(from, to)
+    end
+  end
+
+  if renameat2_supported
+    def _renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
+      if from_dir_fd == nil
+        from_dir_fd = AT_FDSWD
+      elsif from_dir_fd.is_a?(Dir)
+        from_dir_fd = from_dir_fd.fineno
+      elsif from_dir_fd.is_a?(Integer)
+        #
+      else
+        raise ValueError
+      end
+
+      if to_dir_fd == nil
+        to_dir_fd = AT_FDSWD
+      elsif to_dir_fd.is_a?(Dir)
+        to_dir_fd = to_dir_fd.fineno
+      elsif to_dir_fd.is_a?(Integer)
+        #
+      else
+        raise ValueError
+      end
+
+      return _os_renameat2(from_dir_fd, from, to_dir_fd, to, flags)
+    end
+    alias :renameat2 :_renameat2
+  else
+    alias :renameat2 :_renameat2_generic
+  end
+  module_function :renameat2, :_renameat2_generic,
+                  :_rename_exchange_generic,
+                  :_rename_exchange_generic_by_rename
+
+  def rename_noreplace(from, to, *, from_dir_fd:nil, to_dir_fd:nil)
+    return renameat2(from, to,
+                     from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd,
+                     flags: RENAME_NOREPLACE)
+  end
+
+  def rename_exchange(from, to, *, from_dir_fd:nil, to_dir_fd:nil)
+    return renameat2(from, to,
+                     from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd,
+                     flags: RENAME_EXCHANGE)
+  end
+  module_function :rename_noreplace
+  module_function :rename_exchange
+end
+
+module RenameEx
+  extend Forwardable
+  [:renameat2, :rename_noreplace, :rename_exchange].each { |sym|
+    def_delegator(:RENAME_EX_INTERNAL_, sym)
+    module_function(sym)
+  }
+  [:RENAME_NOREPLACE, :RENAME_EXCHANGE].each { |sym|
+      const_set(sym, RENAME_EX_INTERNAL_.const_get(sym))
+  }
+end
