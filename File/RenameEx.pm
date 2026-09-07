@@ -15,7 +15,7 @@ use constant RENAME_EXCHANGE => 2;
 
 use File::Basename qw(dirname);
 use File::Temp qw(tempfile tempdir);
-use Errno qw(EACCES ENOENT);
+use Errno qw(EACCES ENOENT EEXIST);
 use Scalar::Util ();
 
 our $rename_noreplace_supported;
@@ -99,6 +99,12 @@ BEGIN {
 }
 # TODO: BSD/MacOS (renameatx_np)
 
+sub _statstr ($) {
+    my @r = stat($_[0]);
+    @r or return undef;
+    join("/", @r)
+}
+
 sub _renameat2_generic ($$$) {
     my ($from, $to, $flags) = @_;
     _parse_arg($from, undef);
@@ -107,8 +113,7 @@ sub _renameat2_generic ($$$) {
 	rename($from, $to);
     } elsif ($flags == RENAME_NOREPLACE) {
 	if (-e $to) {
-	    require Errno;
-	    $! = &Errno::EEXIST;
+	    $! = EEXIST;
 	    return undef;
 	}
 	rename($from, $to);
@@ -153,17 +158,27 @@ sub _rename_exchange_generic_by_rename($$) {
 	return undef;
     }
     unless (rename $to, $from) {
+	if ($! == ENOENT) {
+	    if (rename $tmpname, $from) {
+		return 1;
+	    } else {
+		carp "rename_exchange: rename(recovery) failed: $!";
+		return 0;
+	    }
+	}
 	{
 	    local ($!);
 	    rename $tmpname, $from or carp "rename_exchange: rename(recovery) failed: $!";
+	    return undef;
 	}
-	return undef;
     }
     unless (rename $tmpname, $to) {
 	{
 	    local ($!);
 	    # try recover original file
-	    rename $tmpname, $from or carp "rename_exchange: rename(recovery) failed: $!";
+	    (rename $from, $to and
+	     rename $tmpname, $from)
+	      or carp "rename_exchange: rename(recovery) failed: $!";
 	}
 	return undef;
     }
@@ -188,8 +203,13 @@ sub _rename_exchange_generic($$) {
 	return undef;
     }
 
-    # trivial case: the very same name; hardlinks are not treated
+    # trivial case: the very same name
     return 1 if $from eq $to;
+
+    # same hardlinks: by_rename will not work well
+    my $fromstat = _statstr($from);
+    my $tostat = _statstr($to);
+    return 1 if $fromstat && $tostat && ($fromstat eq $tostat);
 
     if (-d $to || -d $from) {
 	# we have no ways to avoid the brief disappearance;
@@ -256,6 +276,8 @@ sub _rename_exchange_generic($$) {
 	# try recover original "from" file.
 	if (rename $tmpfrom, $from) {
 	    # recovery succeed; now safe to remove the tmpdir.
+	    # usually it's clear; but when these were the same non-dir files,
+	    # hardlinks are remaining.
 	    $tmp->unlink_on_destroy(1);
 	    undef $tmp;
 	} else {
