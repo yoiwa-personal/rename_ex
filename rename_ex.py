@@ -82,7 +82,12 @@ def _mktemp_at(dir, dir_fd, mkdir=True):
 
 def _rename_exchange_generic_by_rename(src, dst, *,
                                        src_dir_fd=None, dst_dir_fd=None):
-    tmpisdir = stat.S_ISDIR(os.lstat(src, dir_fd=src_dir_fd).st_mode)
+    srcstat = os.lstat(src, dir_fd=src_dir_fd)
+    dststat = os.lstat(dst, dir_fd=dst_dir_fd)
+
+    if srcstat == dststat: return
+
+    tmpisdir = stat.S_ISDIR(srcstat.st_mode)
     
     basedir = os.path.dirname(dst)
     if tmpisdir:
@@ -94,33 +99,37 @@ def _rename_exchange_generic_by_rename(src, dst, *,
         
     try:
         os.rename(src, tmpname, src_dir_fd=src_dir_fd, dst_dir_fd=tmp_dir_fd)
-    except RuntimeError as e:
+    except Exception as e:
         if tmpisdir:
             try: os.rmdir(tmpname, dir_fd=tmp_dir_fd)
-            except RuntimeError as ee:
-                warnings.warn(f"rename_exchange: rmdir(recovery) tmporary dir failed: {ee!r}")
+            except Exception as ee:
+                warnings.warn(f"rename_exchange: rmdir(recovery) temporary dir failed: {ee!r}")
         else:
             try: os.unlink(tmpname, dir_fd=tmp_dir_fd)
-            except RuntimeError as ee:
-                warnings.warn(f"rename_exchange: unlink(recovery) tmporary file failed: {ee!r}")
+            except Exception as ee:
+                warnings.warn(f"rename_exchange: unlink(recovery) temporary file failed: {ee!r}")
         raise e
 
     try:
         os.rename(dst, src, src_dir_fd=dst_dir_fd, dst_dir_fd=src_dir_fd)
-    except RuntimeError as e:
-        try: os.rename(tmpname, src, src_dir_fd=tmp_dir_fd, dst_dir_fd=src_dir_fd)
-        except RuntimeError as ee:
-            warnings.warn(f"rename_exchange: rename(recovery) 1 tmporary file failed: {ee!r}")
+    except Exception as e:
+        try:
+            os.rename(tmpname, src, src_dir_fd=tmp_dir_fd, dst_dir_fd=src_dir_fd)
+        except Exception as ee:
+            warnings.warn(f"rename_exchange: rename(recovery) 1 temporary file failed: {ee!r}")
+        if isinstance(e, FileNotFoundError):
+            # same file in different path (should be detected stat check)
+            return 0
         raise e
 
     try:
         os.rename(tmpname, dst, src_dir_fd=dst_dir_fd, dst_dir_fd=dst_dir_fd)
-    except RuntimeError as e:
+    except Exception as e:
         try:
             os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
             os.rename(tmpname, src, src_dir_fd=tmp_dir_fd, dst_dir_fd=src_dir_fd)
-        except RuntimeError as ee:
-            warnings.warn(f"rename_exchange: rename(recovery) 2 tmporary file failed:{ee!r}: {src!r} is left as {tmporary!r}")
+        except Exception as ee:
+            warnings.warn(f"rename_exchange: rename(recovery) 2 temporary file failed:{ee!r}: {src!r} is left as {tmpname!r}")
         raise e
     return
 
@@ -137,7 +146,7 @@ def _rename_exchange_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     srcstat = os.lstat(src, dir_fd=src_dir_fd)
     dststat = os.lstat(dst, dir_fd=dst_dir_fd) # Pass-through FileNotFoundError and others
 
-    if src == dst and src_dir_fd == dst_dir_fd: return
+    if srcstat == dststat: return
 
     if stat.S_ISDIR(srcstat.st_mode) or stat.S_ISDIR(dststat.st_mode):
         return _rename_exchange_generic_by_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
@@ -151,51 +160,51 @@ def _rename_exchange_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     
     try:
         os.link(src, tmpsrc, src_dir_fd=src_dir_fd, dst_dir_fd=tmp_dir_fd)
-    except RuntimeError as e:
+    except Exception as e:
         try:
             os.rmdir(tmpdir, dir_fd=dst_dir_fd)
-        except RuntimeError as ee:
+        except Exception as ee:
             warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
         raise
 
     try:
         os.link(dst, tmpdst, src_dir_fd=dst_dir_fd, dst_dir_fd=tmp_dir_fd)
-    except RuntimeError as e:
+    except Exception as e:
         try:
             os.unlink(tmpsrc, dir_fd=tmp_dir_fd)
             os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
-        except RuntimeError as ee:
+        except Exception as ee:
             warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
         raise
     
     # critical section: files may be lost
     try:
         os.rename(tmpdst, src, src_dir_fd=tmp_dir_fd, dst_dir_fd=src_dir_fd)
-    except RuntimeError as e:
+    except Exception as e:
         # still safe...
         try:
             os.unlink(tmpdst, dir_fd=tmp_dir_fd)
             os.unlink(tmpsrc, dir_fd=tmp_dir_fd)
             os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
-        except RuntimeError as ee:
+        except Exception as ee:
             warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
         raise
     
     try:
         os.rename(tmpsrc, dst, src_dir_fd=tmp_dir_fd, dst_dir_fd=dst_dir_fd)
         # now safe
-    except RuntimeError as e:
+    except Exception as e:
         # in danger: src is about to lost
         try:
             os.rename(tmpsrc, src, src_dir_fd=tmp_dir_fd, dst_dir_fd=src_dir_fd)
-        except RuntimeError as ee:
+        except Exception as ee:
             warnings.warn(f"rename_exchange: rename for recovery failed: {e!r}: original file {src!r} is left on {tmpsrc!r}")
             # don't touch on temporary directory!
             raise e
         # now safe: only tmpdir is exist
         try:
             os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
-        except RuntimeError as ee:
+        except Exception as ee:
             warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
         raise
 
@@ -208,9 +217,21 @@ def _rename_exchange_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
         except FileNotFoundError:
             pass
         os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
-    except RuntimeError as ee:
+    except Exception as ee:
         warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
         raise
+
+def _renameat2_generic_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+    try:
+        os.lstat(dst, dir_fd=dst_dir_fd)
+    except FileNotFoundError:
+        pass
+    else:
+        raise FileExistsError
+    return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    # link and unlink is another solution; however,
+    #  1) it will fail if only src directory is non-writable, and
+    #  2) it still makes race-condition around unlink.
 
 def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
     if (os.stat not in os.supports_dir_fd):
@@ -220,13 +241,7 @@ def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
     if (flags == 0):
         return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     elif (flags == RENAME_NOREPLACE):
-        try:
-            os.lstat(dst, dir_fd=dst_dir_fd)
-        except FileNotFoundError:
-            pass
-        else:
-            raise FileExistsError
-        return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        return _renameat2_generic_noreplace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     elif (flags == RENAME_EXCHANGE):
         return _rename_exchange_generic(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     

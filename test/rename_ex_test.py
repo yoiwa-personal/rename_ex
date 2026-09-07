@@ -38,7 +38,8 @@ def prepare(tobj, use_fd=False):
         os.chdir(tmpdir)
 
     env = SimpleNamespace()
-    env.prefix =  prefix
+    env.use_fd = use_fd
+    env.prefix = prefix
     env.fd = fd
         
     os.mkdir(prefix + "1d")
@@ -56,8 +57,15 @@ do_renameat2 = renameat2
     
 def try_renameat2(env, src, dest, flags, msg="", success=True):
     try:
-        do_renameat2(src, dest,
-                     src_dir_fd=env.fd, dst_dir_fd=env.fd, flags=flags)
+        if env.use_fd == 2:
+            do_renameat2(src, env.prefix + dest,
+                         src_dir_fd=env.fd, dst_dir_fd=None, flags=flags)
+        elif env.use_fd == 3:
+            do_renameat2(env.prefix + src, dest,
+                         src_dir_fd=None, dst_dir_fd=env.fd, flags=flags)
+        else:
+            do_renameat2(src, dest,
+                         src_dir_fd=env.fd, dst_dir_fd=env.fd, flags=flags)
     except OSError as e:
         print(f"renameat2({src!r}, {dest!r}, flags={flags!r}) => {e!r}")
         if success:
@@ -148,8 +156,19 @@ def dir_dir_test(env):
 def same_same_test (env):
     try_renameat2(env, "1", "1", RENAME_EXCHANGE, msg="9-f")
     check_file(env, "1", "1", msg="9-1")
+    print(">>>test10")
     try_renameat2(env, "2d", "2d", RENAME_EXCHANGE, msg="10")
     check_file(env, "2d/2f", "2f", msg="10-2")
+
+def file_noclobber_ok_test (env):
+    try_renameat2(env, "1", "3", RENAME_NOREPLACE, msg="11-fo")
+    check_file(env, "3", "1", msg="11-3")
+    try_renameat2(env, "3", "1", RENAME_NOREPLACE, msg="11-of")
+    check_file(env, "1", "1", msg="11-1")
+    try_renameat2(env, "1d", "3d", RENAME_NOREPLACE, msg="11-do")
+    check_file(env, "3d/1f", "1f", msg="11-3d")
+    try_renameat2(env, "3d", "1d", RENAME_NOREPLACE, msg="11-od")
+    check_file(env, "1d/1f", "1f", msg="11-1d")
 
 def file_noclobber_test (env):
     try_renameat2(env, "1", "2", RENAME_NOREPLACE, success=False, msg="11-ff")
@@ -216,6 +235,7 @@ def run_test (use_fd):
         file_dir_test(env)
         dir_file_test(env)
         same_same_test(env)
+        file_noclobber_ok_test(env)
         file_noclobber_test(env)
         link_test(env)
         rename_corner_test(env)
@@ -226,12 +246,22 @@ if opt == 'linux':
     run_test(False)
 elif opt == 'linux-fd':
     run_test(True)
+elif opt == 'linux-r':
+    run_test(2)
+elif opt == 'linux-l':
+    run_test(3)
 elif opt == 'generic':
     do_renameat2 = rename_ex._renameat2_generic
     run_test(False)
 elif opt == 'generic-fd':
     do_renameat2 = rename_ex._renameat2_generic
     run_test(True)
+elif opt == 'generic-r':
+    do_renameat2 = rename_ex._renameat2_generic
+    run_test(2)
+elif opt == 'generic-l':
+    do_renameat2 = rename_ex._renameat2_generic
+    run_test(3)
 else:
     raise ValueError
 
