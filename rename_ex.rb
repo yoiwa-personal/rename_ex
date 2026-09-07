@@ -36,60 +36,97 @@ module RenameEx
     end
     renameat2_supported = true
   end
+
+  def self._mktempnode(dir, mkdir)
+    if (dir == '')
+      dir = "."
+    end
+    dir = File.absolute_path(dir)
+
+    openflags = (File::RDWR | File::CREAT | File::NOFOLLOW | File::EXCL)
+    if mkdir
+      f = lambda { |name| Dir.mkdir name, mode=0o700 }
+    else
+      f = lambda { |name| open name, openflags, 0o600 }
+    end
+
+    fname = nil
+    require 'securerandom'
+    20.times {
+      token = SecureRandom.alphanumeric(8)
+      begin
+        fname = dir + "/.rename-" + token
+        fd = f.call(fname)
+      rescue Errno::EEXIST
+        continue
+      end
+      return fd, fname
+    }
+    raise Errno::EBUSY
+  end
   
   def self._rename_exchange_generic_by_rename(from, to)
-    tmpisdir = FileTest.directory?(from)
+    fromstat = File.lstat(from)
+    tostat = File.lstat(to) # Pass-through FileNotFoundError and others
+
+    if fromstat.dev == tostat.dev && fromstat.ino == tostat.ino
+      return
+    end
+
+    tmpisdir = fromstat.directory?
     
-    basedir = File.dirname(to)
+    basedir = File.dirname(File.absolute_path(to))
     if tmpisdir
-      tmpname = Dir.mktmpdir("rename.", tmpdir: basedir)
+      tmpname = Dir.mktmpdir("..rename.", tmpdir: basedir)
     else
-      file = Tempfile.create(basename="rename.", tmpdir: basedir, mode: 0o600)
-      tmpname = file.path
-      file.close
+      fd, tmpname = self._mktempnode(basedir, false)
+      fd.close
     end
 
     begin
       File.rename(from, tmpname)
-    rescue RuntimeError => e
+    rescue StandardError => e
       if tmpisdir
         begin
           Dir.rmdir(tmpname)
-        rescue RuntimeError => ee
+        rescue StandardError => ee
           warn "rename_exchange: rmdir(recovery) tmporary dir failed: #{ee}"
         end
       else
         begin
           File.delete(tmpname)
-        rescue RuntimeError => ee
+        rescue StandardError => ee
           warn "rename_exchange: unlink(recovery) tmporary file failed: #{ee}"
         end
-        raise e
       end
+      raise e
     end
 
     begin
       File.rename(to, from)
-    rescue RuntimeError => e
+    rescue StandardError => e
       begin
         File.rename(tmpname, from)
-      rescue RuntimeError => ee
+      rescue StandardError => ee
         warn "rename_exchange: rename(recovery) 1 tmporary file failed: #{ee}"
+      end
+      if e.is_a?(Errno::ENOENT)
+        return
+      else
         raise e
       end
     end
 
     begin
       File.rename(tmpname, to)
-    rescue RuntimeError => e
+    rescue StandardError => e
       begin
         File.rename(from, to)
         File.rename(tmpname, from)
-      rescue RuntimeError => ee
+      rescue StandardError => ee
         warn "rename_exchange: rename(recovery) 2 tmporary file failed:#{ee}: #{from} is left as #{tmporary}"
-        raise e
-        return
       end
+      raise e
     end
   end
 
@@ -97,7 +134,7 @@ module RenameEx
     dir_from = File.dirname(from)
     dir_to = File.dirname(to)
 
-    if not (FileTest.writable?(dir_to) && FileTest.writable?(dir_from))
+    if not (FileTest.writable?(dir_from) && FileTest.writable?(dir_to))
       raise Errno::EPERM
     end
 
@@ -111,18 +148,18 @@ module RenameEx
     if fromstat.directory? or tostat.directory?
       return self._rename_exchange_generic_by_rename(from, to)
     end
-    
-    tmpdir = Dir.mktmpdir("rename.", tmpdir=dir_to)
+
+    tmpdir = Dir.mktmpdir("..rename.", tmpdir=dir_to)
 
     tmpfrom = tmpdir + "/.exchange.from"
     tmpto = tmpdir + "/.exchange.to"
     
     begin
       File.link(from, tmpfrom)
-    rescue RuntimeError => e
+    rescue StandardError => e
       begin
         Dir.rmdir(tmpdir)
-      rescue RuntimeError => ee
+      rescue StandardError => ee
         warn("rename_exchange: cleaning tmpdir failed: #{ee}")
       end
       raise e
@@ -130,11 +167,11 @@ module RenameEx
 
     begin
       File.link(to, tmpto)
-    rescue RuntimeError => e
+    rescue StandardError => e
       begin
         File.unlink(tmpfrom, dir_fd=tmp_dir_fd)
         Dir.rmdir(tmpdir, dir_fd=tmp_dir_fd)
-      rescue RuntimeError => ee
+      rescue StandardError => ee
         warn("rename_exchange: cleaning tmpdir failed: #{ee}")
       end
       raise e
@@ -143,13 +180,13 @@ module RenameEx
     # critical section: files may be lost
     begin
       File.rename(tmpto, from)
-    rescue RuntimeError => e
+    rescue StandardError => e
       # still safe...
       begin
         File.delete(tmpto)
         File.delete(tmpfrom)
         Dir.rmdir(tmpdir)
-      rescue RuntimeError => ee
+      rescue StandardError => ee
         warn("rename_exchange: cleaning tmpdir failed: #{ee}")
       end
       raise e
@@ -158,11 +195,11 @@ module RenameEx
     begin
       File.rename(tmpfrom, to)
     # now safe
-    rescue RuntimeError => e
+    rescue StandardError => e
       # in danger: from is about to lost
       begin
         File.rename(tmpfrom, from)
-      rescue RuntimeError => ee
+      rescue StandardError => ee
         warn("rename_exchange: rename for recovery failed: #{ee}: original file #{from} is left on #{tmpfrom}")
         # don't touch on temporary directory!
         raise e
@@ -170,7 +207,7 @@ module RenameEx
       # now safe: only tmpdir is exist
       begin
         Dir.rmdir(tmpdir)
-      rescue RuntimeError => ee
+      rescue StandardError => ee
         warn("rename_exchange: cleaning tmpdir failed: #{ee}")
       end
       raise
@@ -185,7 +222,7 @@ module RenameEx
       rescue Errno::ENOENT
       end
       Dir.rmdir(tmpdir)
-    rescue RuntimeError => ee
+    rescue StandardError => ee
       warn("rename_exchange: cleaning tmpdir failed: #{ee}")
       raise ee
     end
@@ -193,7 +230,7 @@ module RenameEx
 
   def _renameat2_generic(from, to, *, from_dir_fd:nil, to_dir_fd:nil, flags:0)
     if from_dir_fd != nil or to_dir_fd != nil
-      raise RuntimeError.new("dir_fd emulation not available")
+      raise StandardError.new("dir_fd emulation not available")
     end
     if flags == 0
       return File.rename(from, to)

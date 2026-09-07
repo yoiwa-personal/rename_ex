@@ -73,7 +73,7 @@ def check_file(env, f, check, msg: "")
   begin
     r = read_file(env, f)
     if r != check
-      warn("test $#{msg} failed: content mismatch: {r.inspect} <> {check.inspect}")
+      warn("test $#{msg} failed: content mismatch: #{r.inspect} <> #{check.inspect}")
     end
   rescue RuntimeError => e
     warn(f"test $#{msg} failed: #{e}")
