@@ -6,8 +6,18 @@ This library provides an interface to Linux ability to rename files etc. in a bi
 - Exchange two files' names
 - Specify directory handles (dirfd) for filenames' origins
 
-Currently, this library supports fairly-recent (after June 2014) Linuxes.
-It also provides limited emulation routines for non-Linux, POSIX compliant environments.
+Currently, this library supports the following environments:
+ - Linux: 
+   - fully supported in Python, Ruby and Perl; uses `renameat2` system call.
+   - fairly-recent (after June 2014) Linux needed.
+ - MacOS Darwin:
+   - supported in Python and Ruby; uses `renameatx_np` system call.
+   - emulation only on Perl.
+ - Windows: 
+   - supported on Python; MoveFileExW and Transactional NTFS are used.
+   - some limited functionality in Perl.
+
+It also provides limited emulation routines for other POSIX compliant environments.
 
 # provided APIs
 
@@ -52,11 +62,7 @@ In Python, the name of module and imports are both "`rename_ex`".
 Dirfd parameters are low-level OS handles in integer, opened with 
 `os.open(..., O_RDONLY | O_DIRECTORY)`.  `None` can be used for the current directory.
 
-The dirfd parameters are fully supported, even with emulation below.
-
-There are experimental supports for MacOS Darwin and Windows.  Darwin uses `renameatx_np`,
-which has almost the similar functionality to `renameat2`.
-Win32 uses MoveFileExW and transactional filesystem feature to implement RENAME_EXCHANGE functionality.
+The dirfd parameters are fully supported, even with emulations.
 
 ## Ruby
 
@@ -66,14 +72,13 @@ Named parameters are different from Python's, reflecting the names given in orig
 
 Dirfd parameters takes either an integer or a `Dir` object. For current directory, `nil` is used.
 
-There are experimental supports for MacOS Darwin as well.
-
 ## Perl
 
 The package is named `File::RenameEx`.
 
-Due to limitation of Perl function interfaces, the dirfd parameters are passed in an different way.
-In perl, the API is like below:
+Due to different syntax natures of Perl function interfaces, the dirfd
+parameters are passed in an different way.  The Perl API is like
+below:
 
   - `renameat2(srcfile, dstfile, flags)`
   - `renameat2([srcfd, srcname], [dstfd, dstname], flags)`
@@ -90,9 +95,11 @@ The OS error is stored in `$!`.
 Darwin support is via emulation only; native support requires external
 libraries not included in core distribution.
 
+Windows support is limited: RENAME_EXCHANGE is emulated and does not support dir_fd.
+
 # Emulations
 
-If the running environment is not Linux, the library will fallback to some limited emulations.
+If the running environment is not supported, the library will fallback to some limited emulations.
 
  - In Ruby and Perl, dir_fd are not supported in emulated cases.
  - Atomicity is generally lost: there will be a small time window that gives inconsistent results.
