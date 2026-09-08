@@ -54,6 +54,10 @@ Dirfd parameters are low-level OS handles in integer, opened with
 
 The dirfd parameters are fully supported, even with emulation below.
 
+There are experimental supports for MacOS Darwin and Windows.  Darwin uses `renameatx_np`,
+which almost has similar functionality to `renameat2`.
+Win32 uses MoveFileExW and transactional filesystem feature to implement RENAME_EXCHANGE functionality.
+
 ## Ruby
 
 In Ruby, the library can be required in name `rename_ex`, and available as module `RenameEx`.

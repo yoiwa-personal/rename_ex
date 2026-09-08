@@ -16,6 +16,8 @@ renameat2_undefflags_passthrough = False
 rename_exchange_native_supported = False
 renameat_dirfd_supported = False
 
+use_native = True
+
 # constants for user API (the same as Linux)
 RENAME_NOREPLACE = 1
 RENAME_EXCHANGE = 2
@@ -94,7 +96,7 @@ elif sys.platform == "darwin":
         elif flags == RENAME_EXCHANGE:
             return 2 # RENAME_SWAP
         else:
-            raise ValueError.new("unknown flags")
+            raise ValueError("unknown flags")
     
     def _renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
         if src_dir_fd is None: src_dir_fd = AT_FDCWD
@@ -106,10 +108,33 @@ elif sys.platform == "win32":
 
     MOVEFILE_REPLACE_EXISTING = 1
 
-    _kernel32 = ctypes.WinDLL('kernel32', use_errno=True)
+    _kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    _ktmw32 = ctypes.WinDLL('ktmw32', use_last_error=True)
 
     _kernel32.MoveFileExW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
     _kernel32.MoveFileExW.restype = wintypes.BOOL
+
+    _ktmw32 = ctypes.WinDLL('ktmw32', use_last_error=True)
+
+    # Transaction File System
+    
+    _ktmw32.CreateTransaction.argtypes = [
+        wintypes.LPVOID, wintypes.HANDLE, wintypes.DWORD, 
+        wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR
+    ]
+    _ktmw32.CreateTransaction.restype = wintypes.HANDLE
+    
+    _kernel32.MoveFileTransactedW.argtypes = [
+        wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPVOID, 
+        wintypes.LPVOID, wintypes.DWORD, wintypes.HANDLE
+    ]
+    _kernel32.MoveFileTransactedW.restype = wintypes.BOOL
+    
+    _ktmw32.CommitTransaction.argtypes = [wintypes.HANDLE]
+    _ktmw32.CommitTransaction.restype = wintypes.BOOL
+    
+    _ktmw32.RollbackTransaction.argtypes = [wintypes.HANDLE]
+    _ktmw32.RollbackTransaction.restype = wintypes.BOOL
 
     def _os_MoveFileEx(old, new, flags):
         r = _kernel32.MoveFileExW(old, new, flags)
@@ -119,10 +144,74 @@ elif sys.platform == "win32":
 
     renameat2_native_supported = 'win32:MoveFileExW'
     renameat2_undefflags_passthrough = False
-    rename_exchange_native_supported = False
-    renameat_dirfd_supported = True
+    rename_exchange_native_supported = True
+    renameat_dirfd_supported = False
 
     AT_FDCWD = -2
+
+    class _NoTransactionSupported(Exception):
+        pass
+
+    def _rename_exchange_txf_win32(src, dst, tmp):
+        err = None
+
+        for seq in range(tempfile.TMP_MAX):
+            h_transaction = _ktmw32.CreateTransaction(None, None, 0, 0, 0, 0, "Swap Files Transaction")
+            if h_transaction == wintypes.HANDLE(-1).value or h_transaction is None:
+                err = ctypes.get_last_error()
+                if err == 6706: # ERROR_TM_INITIALIZATION_FAILED:
+                    raise _NoTransactionSupported
+                raise ctypes.WinError(err)
+
+            success = False
+
+            try:
+                if _kernel32.MoveFileTransactedW(src, tmp, None, None, 0, h_transaction):
+                 if _kernel32.MoveFileTransactedW(dst, src, None, None, 0, h_transaction):
+                  if _kernel32.MoveFileTransactedW(tmp, dst, None, None, 0, h_transaction):
+                   if _ktmw32.CommitTransaction(h_transaction):
+                        return True
+
+                err = ctypes.get_last_error()
+                if err == 2005: # ERROR_VOLUME_NOT_SUPPORTED
+                    raise _NoTransactionSupported
+                if err in (6800, 6706, 6718):
+                    # ERR_TRANSACTIONAL_CONFLICT, ERROR_TRANSACTION_ALREADY_ABORTED, ERROR_TRANSACTION_NOT_ACTIVE
+                    continue
+                else:
+                    _ktmw32.RollbackTransaction(h_transaction)
+                    break
+            finally:
+                _kernel32.CloseHandle(h_transaction)
+        raise ctypes.WinError(err)
+
+    def _rename_exchange_win32(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        if src_dir_fd is not None: raise ValueError("dirfd is not supported on Win32")
+        if dst_dir_fd is not None: raise ValueError("dirfd is not supported on Win32")
+
+        srcstat = None
+        dststat = None
+
+        srcstat = os.lstat(src)
+        dststat = os.lstat(dst) # FileNotFoundError is propargated
+
+        if srcstat == dststat:
+           return
+
+        basedir = os.path.dirname(dst)
+        _, tmpdir = _mktemp_at(dir=basedir, dir_fd=dst_dir_fd, mkdir=True)
+        tmpname = tmpdir + "/" + ".rename.from"
+        tmp_dir_fd = dst_dir_fd
+
+        try:
+             return _rename_exchange_txf_win32(src, dst, tmpname)
+        except _NoTransactionSupported:
+             pass
+        finally:
+             os.rmdir(tmpdir)
+        if use_native == -1:
+            raise ValueError("renameat2(RENAME_NOREPLACE) is not available")
+        return _rename_exchange_generic(src, dst)
 
     def _convert_flags_win32(flags):
         if flags == 0:
@@ -130,14 +219,16 @@ elif sys.platform == "win32":
         elif flags == RENAME_NOREPLACE:
             return 0
         elif flags == RENAME_EXCHANGE:
-            raise ValueError.new("exchange not supported")
+            raise ValueError("exchange not supported")
         else:
-            raise ValueError.new("unknown flags")
+            raise ValueError("unknown flags")
     
     def _renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
-        if src_dir_fd is not None: raise ValueError.new("dirfd is not supported on Win32")
-        if dst_dir_fd is not None: raise ValueError.new("dirfd is not supported on Win32")
+        if src_dir_fd is not None: raise ValueError("dirfd is not supported on Win32")
+        if dst_dir_fd is not None: raise ValueError("dirfd is not supported on Win32")
 
+        if flags == RENAME_EXCHANGE:
+            return _rename_exchange_win32(src, dst)
         srcstat = None
         dststat = None
         try:
@@ -184,8 +275,6 @@ def _rename_exchange_generic_by_rename(src, dst, *,
 
     if srcstat == dststat: return
 
-    tmpisdir = stat.S_ISDIR(srcstat.st_mode)
-    
     basedir = os.path.dirname(dst)
     _, tmpdir = _mktemp_at(dir=basedir, dir_fd=dst_dir_fd, mkdir=True)
     tmpname = tmpdir + "/" + ".rename.from"
@@ -336,8 +425,6 @@ def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
         return _renameat2_generic_noreplace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     elif (flags == RENAME_EXCHANGE):
         return _rename_exchange_generic(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-
-use_native = True
 
 def _renameat2_wrapper(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
     if flags == 0:
