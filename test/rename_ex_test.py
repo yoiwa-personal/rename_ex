@@ -242,13 +242,13 @@ def run_test (use_fd):
         os.chdir("/")
 
 opt = sys.argv[1]
-if opt == 'linux':
+if opt == 'native':
     run_test(False)
-elif opt == 'linux-fd':
+elif opt == 'native-fd':
     run_test(True)
-elif opt == 'linux-r':
+elif opt == 'native-r':
     run_test(2)
-elif opt == 'linux-l':
+elif opt == 'native-l':
     run_test(3)
 elif opt == 'generic':
     do_renameat2 = rename_ex._renameat2_generic
