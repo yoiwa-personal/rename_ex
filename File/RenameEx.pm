@@ -83,12 +83,22 @@ BEGIN {
 		_parse_arg($from, undef);
 		_parse_arg($to, undef);
 
+                my $fromstat = _statstr($from);
+                my $tostat = _statstr($to);
+
+                if (defined $fromstat && defined $tostat && $fromstat eq $tostat) {
+                    if ($flags == 0) {return 1;}
+                    elsif ($flags == 1) {$! = EEXIST; return 0; }
+                    elsif ($flags == 2) {return 1;}
+                }
 		my $winflags = Win32API::File::MOVEFILE_REPLACE_EXISTING();
 		if ($flags == 0) {
 		} elsif ($flags == RENAME_NOREPLACE) {
 		    $winflags = 0;
 		} elsif ($flags == RENAME_EXCHANGE) {
-		    return _rename_exchange_generic($from, $to);
+		    return _rename_exchange_generic_by_rename($from, $to);
+                    # In Perl, use of rename_exchange_generic is a bit tough,
+		    # due to the semantics of rename function.
 		}
 		return Win32API::File::MoveFileEx($from, $to, $winflags);
 	    }
@@ -96,8 +106,8 @@ BEGIN {
 	*renameat2 = \&_renameat2_win32;
 	$rename_noreplace_supported = "Win32API::File";
     }
+    # TODO: BSD/MacOS (renameatx_np): needs FFI external module
 }
-# TODO: BSD/MacOS (renameatx_np)
 
 sub _statstr ($) {
     my @r = stat($_[0]);
@@ -135,31 +145,22 @@ sub _rename_exchange_generic_by_rename($$) {
 
     my ($fh, $tmpname);
     
-    if (-d $from) {
-	# empty directory can be overwritten by directory
-	$tmpname = tempdir("rename.XXXXXX", DIR => $dir, CLEANUP => 0);
-	die unless defined $tmpname;
-    } else {
-	($fh, $tmpname) = tempfile("rename.XXXXXX", DIR => $dir, UNLINK => 0);
-	die unless defined $tmpname;
-	close $fh;
-    }
+    my $tmpdir = tempdir("rename.XXXXXX", DIR => $dir, CLEANUP => 0);
+    die unless defined $tmpdir;
+    $tmpname = $tmpdir + "/..rename.from";
 
     # first move "from": EXDEV detected here
     unless (rename $from, $tmpname) {
 	{
 	    local ($!);
-	    if (-d $from) {
-		rmdir $tmpname or carp "rename_exchange: rmdir(recovery) temporary dir failed: $!";
-	    } else {
-		unlink $tmpname or carp "rename_exchange: unlink(recovery) temporary file failed: $!";
-	    }
+            rmdir $tmpdir or carp "rename_exchange: rmdir(recovery) temporary dir failed: $!";
 	}
 	return undef;
     }
     unless (rename $to, $from) {
-	if ($! == ENOENT) {
+	if ($! == ENOENT) { # same file case
 	    if (rename $tmpname, $from) {
+                rmdir $tmpdir or carp "rename_exchange: rmdir(recovery) temporary dir failed: $!";
 		return 1;
 	    } else {
 		carp "rename_exchange: rename(recovery) failed: $!";
@@ -169,6 +170,7 @@ sub _rename_exchange_generic_by_rename($$) {
 	{
 	    local ($!);
 	    rename $tmpname, $from or carp "rename_exchange: rename(recovery) failed: $!";
+            rmdir $tmpdir or carp "rename_exchange: rmdir(recovery) temporary dir failed: $!";
 	    return undef;
 	}
     }
@@ -179,9 +181,11 @@ sub _rename_exchange_generic_by_rename($$) {
 	    (rename $from, $to and
 	     rename $tmpname, $from)
 	      or carp "rename_exchange: rename(recovery) failed: $!";
+            rmdir $tmpdir or carp "rename_exchange: rmdir(recovery) temporary dir failed: $!";
 	}
 	return undef;
     }
+    rmdir $tmpdir or carp "rename_exchange: rmdir(recovery) temporary dir failed: $!";
     return 1;
 }
     

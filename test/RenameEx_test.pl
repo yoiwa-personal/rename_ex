@@ -126,31 +126,39 @@ sub link_test () {
 sub rename_corner_test () {
     mkdir "9d1";
     mkdir "9d2";
+    mkdir "9d3";
     write_file("9f1", "9");
     write_file("9f2", "9");
+    write_file("9f3", "9");
 
     # NOREPLACE works, of course
     do_renameat2("9d2", "9d1", RENAME_NOREPLACE) and warn "16-0 d->d $!";
 
     # a directory does not overwrite a file
-    do_renameat2("9d1", "9f1", 0) and warn "16-1 d->f $!";
+    do_renameat2("9d3", "9f3", 0) and warn "16-1 d->f $!";
+
+  if ($^O ne 'MSWin32') {
     # a directory DOES overwrite an empty directory!
     do_renameat2("9d2", "9d1", 0) or warn "16-2 d->d $!";
     (-d "9d2") and warn "16-2 exist";
     (-d "9d1") or warn "16-2 notexist";
-
+  }
     # a directory does not overwrite non-empty director!
     do_renameat2("9d1", "2d", 0) and warn "16-2b d->d $!";
 
     # a file does not overwrite an empty directory
     do_renameat2("9f2", "9d1", 0) and warn "16-3 d->d $!";
+  if ($^O ne 'MSWin32') {
     read_file("9f2") eq "9" or warn "16-3 read";
+  }
 
+  if ($^O ne 'MSWin32') {
     do_renameat2("1d", "9d1", 0) or warn "16-4 d->d $!";
     read_file("9d1/1f") eq "1f" or warn "16-4 read";
 
     do_renameat2("9d1", "1d", 0) or warn "16-4 d->d $!";
     read_file("1d/1f") eq "1f" or warn "16-4 read";
+  }
 
     unlink("9f1") or warn "16-5-1 $!";
     unlink("9f2") or warn "16-5-2 $!";
@@ -163,17 +171,17 @@ sub run_test () {
 	       same_same_test file_noclobber_test link_test
 	       rename_corner_test
 	     )) {
-	print "running $t test \n";
+	print "running $t test\n";
 	no strict 'refs';
 	&{$t}();
     }
-    system "ls -lR";
     chdir "..";
 }
 
 if ($0 eq __FILE__) {
     $_ = $ARGV[0];
-    if ($_ eq 'linux') {
+    printf "====\n%s\nrunning Perl test %s\n\n", scalar File::RenameEx::_supported(), $_;
+    if ($_ eq 'native') {
 	*do_renameat2 = \&renameat2;
 	run_test();
     } elsif ($_ eq 'generic') {
