@@ -192,6 +192,7 @@ def link_test (env):
 
     try_renameat2(env, "1", "1", RENAME_NOREPLACE,
                   success=depends_on_arch(False, {"darwin": "DONTCARE"}), msg="15")
+    # rename no replace raises error! (Darwin succeeds with the same path, Win32 workaround in rename_ex)
 
     check_file(env, "1", "1", msg="14-1")
     check_file(env, "1h2", "1", msg="14-2")
@@ -199,37 +200,45 @@ def link_test (env):
 def rename_corner_test (env):
     os.mkdir(env.prefix + "9d1")
     os.mkdir(env.prefix + "9d2")
+    os.mkdir(env.prefix + "9d3")
+    write_file(env, "9f3", "9")
     write_file(env, "9f1", "9")
     write_file(env, "9f2", "9")
 
     # NOREPLACE works, of course
     try_renameat2(env, "9d2", "9d1", RENAME_NOREPLACE, success=False, msg="16-0 d->d")
 
-    # a directory does not overwrite a file
-    try_renameat2(env, "9d1", "9f1", 0, success=False, msg="16-1 d->f")
-    # a directory DOES overwrite an empty directory!
-    try_renameat2(env, "9d2", "9d1", 0, msg="16-2 d->d")
-    check_filetest(env, os.path.exists, "9d2", success=False, msg="16-2 exist")
-    check_filetest(env, os.path.exists, "9d1", msg="16-2 notexist")
+    # a directory does not overwrite a file (on win32, DOES)
+    try_renameat2(env, "9d3", "9f3", 0, success=depends_on_arch(False, {"win32": True}), msg="16-1 d->f")
 
+    # a directory DOES overwrite an empty directory! (on win32, doesn't)
+    if sys.platform != 'win32':
+        try_renameat2(env, "9d2", "9d1", 0, msg="16-2 d->d")
+        check_filetest(env, os.path.exists, "9d2", success=False, msg="16-2 exist")
+        check_filetest(env, os.path.exists, "9d1", msg="16-2 notexist")
+    
     # a directory does not overwrite non-empty directory
     try_renameat2(env, "9d1", "2d", 0, success=False, msg="16-2b d->d")
 
     # a file does not overwrite an empty directory
-    try_renameat2(env, "9f2", "9d1", 0, success=False, msg="16-3 d->d")
-    check_file(env, "9f2", "9", msg="16-3 read")
+    try_renameat2(env, "9f2", "9d1", 0, success=False, msg="16-3 f->d")
+    if sys.platform != 'win32':
+        check_file(env, "9f2", "9", msg="16-3 read")
 
-    try_renameat2(env, "1d", "9d1", 0, msg="16-4 d->d")
-    check_file(env, "9d1/1f", "1f", msg="16-4 read")
+    if sys.platform != 'win32':
+        # further checking for empty dir overwriting behavior
+        try_renameat2(env, "1d", "9d1", 0, msg="16-4 d->d")
+        check_file(env, "9d1/1f", "1f", msg="16-4 read")
 
-    try_renameat2(env, "9d1", "1d", 0, msg="16-4 d->d")
-    check_file(env, "1d/1f", "1f", msg="16-4 read")
+        try_renameat2(env, "9d1", "1d", 0, msg="16-4 d->d")
+        check_file(env, "1d/1f", "1f", msg="16-4 read")
 
     try_ok(env, os.unlink, "9f1", msg="16-5-1")
     try_ok(env, os.unlink, "9f2", msg="16-5-2")
 
 def run_test (use_fd):
     with tempfile.TemporaryDirectory() as d:
+      try:
         env = prepare(d, use_fd=use_fd)
         file_test(env)
         dir_test(env)
@@ -242,6 +251,7 @@ def run_test (use_fd):
         file_noclobber_test(env)
         link_test(env)
         rename_corner_test(env)
+      finally:
         os.chdir("/")
 
 
