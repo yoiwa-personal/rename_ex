@@ -2,7 +2,6 @@ import ctypes
 import os
 import os.path
 import sys
-import platform
 import tempfile
 import warnings
 import stat
@@ -14,21 +13,23 @@ __all__ = ['RENAME_NOREPLACE', 'RENAME_EXCHANGE',
 
 renameat2_supported = False
 
+# constants for user API (the same as Linux)
 RENAME_NOREPLACE = 1
 RENAME_EXCHANGE = 2
 
-if platform.system() == 'Linux':
-    _libc = ctypes.CDLL("libc.so.6", use_errno=True)
-    _encoding = sys.getfilesystemencoding()
-    _errors = sys.getfilesystemencodeerrors()
+_encoding = sys.getfilesystemencoding()
+_errors = sys.getfilesystemencodeerrors()
 
-    def _fnencode(fname):
-        if isinstance(fname, Path):
-            fname = str(fname)
-        if isinstance(fname, bytes):
-            return fname
-        else:
-            return fname.encode(_encoding, errors=_errors)
+def _fnencode(fname):
+    if isinstance(fname, Path):
+        fname = str(fname)
+    if isinstance(fname, bytes):
+        return fname
+    else:
+        return fname.encode(_encoding, errors=_errors)
+
+if sys.platform == 'linux':
+    _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
     def _os_renameat2(olddirfd, oldpath, newdirfd, newpath, flags):
         _libc.renameat2.argtypes = [
@@ -46,20 +47,58 @@ if platform.system() == 'Linux':
             er = ctypes.get_errno()
             raise OSError(er, os.strerror(er))
 
-    renameat2_supported = True
+    renameat2_supported = 'linux:renameat2'
 
     AT_FDCWD = -100
 
-    # see tempfile.py from Python
-    _os_open_flags = (os.O_RDWR | os.O_CREAT | os.O_EXCL
-                      | getattr(os, 'O_NOFOLLOW', 0)
-                      | getattr(os, 'O_BINARY', 0))
-    
     def renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
         if src_dir_fd is None: src_dir_fd = AT_FDCWD
         if dst_dir_fd is None: dst_dir_fd = AT_FDCWD
         _os_renameat2(int(src_dir_fd), src, int(dst_dir_fd), dst, int(flags))
 
+elif sys.platform == "darwin":
+    _libc = ctypes.CDLL(None, use_errno=True)
+
+    def _os_renameatx_np(olddirfd, oldpath, newdirfd, newpath, flags):
+        _libc.renameatx_np.argtypes = [
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint
+        ]
+        _libc.renameatx_np.restype = ctypes.c_int
+
+        oldb = _fnencode(oldpath)
+        newb = _fnencode(newpath)
+
+        r = _libc.renameatx_np(olddirfd, oldb, newdirfd, newb, flags)
+
+        if r != 0:
+            er = ctypes.get_errno()
+            raise OSError(er, os.strerror(er))
+
+    renameat2_supported = 'darwin:renameatx_np'
+
+    AT_FDCWD = -2
+
+    def _convert_flags_darwin(flags):
+        if flags == 0:
+            return 0
+        elif flags == RENAME_NOREPLACE:
+            return 4 # RENAME_EXCL
+        elif flags == RENAME_EXCHANGE:
+            return 2 # RENAME_SWAP
+        else:
+            raise ValueError.new("unknown flags")
+    
+    def renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
+        if src_dir_fd is None: src_dir_fd = AT_FDCWD
+        if dst_dir_fd is None: dst_dir_fd = AT_FDCWD
+        _os_renameatx_np(int(src_dir_fd), src, int(dst_dir_fd), dst, _convert_flags_darwin(flags))
+
+# see tempfile.py from Python
+_os_open_flags = (os.O_RDWR | os.O_CREAT | os.O_EXCL
+                  | getattr(os, 'O_NOFOLLOW', 0)
+                  | getattr(os, 'O_BINARY', 0))
+    
 def _mktemp_at(dir, dir_fd, mkdir=True):
     #assert(dir_fd != None)
     if (dir == ''): dir = "."

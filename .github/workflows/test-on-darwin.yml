@@ -1,0 +1,21 @@
+name: Verify Python on Darwin
+
+on:
+  push:
+    branches: [ "macos" ]
+  workflow_dispatch:
+
+jobs:
+  test-on-darwin:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+
+    - name: Run script and verify platform
+      run: |
+        python3 test/rename_ex_test.py native native-fd native-r native-l

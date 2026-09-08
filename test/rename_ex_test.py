@@ -105,6 +105,9 @@ def try_ok(env, f, a, msg="", success=True):
         if not success:
             warn(f"test ${msg} failed: no error (should fail)")
 
+def depends_on_arch(default, m):
+    return m.get(sys.platform, default)
+
 def file_test(env):
     try_renameat2(env, "1", "3", 0, msg="1")
     check_filetest(env, os.path.exists, "1", msg="1-1", success=False)
@@ -189,7 +192,9 @@ def link_test (env):
     try_renameat2(env, "1h2", "1", RENAME_NOREPLACE, success=False, msg="14")
     # rename no replace raises error!
 
-    try_renameat2(env, "1", "1", RENAME_NOREPLACE, success=False, msg="15")
+    try_renameat2(env, "1", "1", RENAME_NOREPLACE,
+                  success=depends_on_arch(False, {"macos": True}), msg="15")
+
     check_file(env, "1", "1", msg="14-1")
     check_file(env, "1h2", "1", msg="14-2")
 
@@ -241,27 +246,29 @@ def run_test (use_fd):
         rename_corner_test(env)
         os.chdir("/")
 
-opt = sys.argv[1]
-if opt == 'linux':
-    run_test(False)
-elif opt == 'linux-fd':
-    run_test(True)
-elif opt == 'linux-r':
-    run_test(2)
-elif opt == 'linux-l':
-    run_test(3)
-elif opt == 'generic':
-    do_renameat2 = rename_ex._renameat2_generic
-    run_test(False)
-elif opt == 'generic-fd':
-    do_renameat2 = rename_ex._renameat2_generic
-    run_test(True)
-elif opt == 'generic-r':
-    do_renameat2 = rename_ex._renameat2_generic
-    run_test(2)
-elif opt == 'generic-l':
-    do_renameat2 = rename_ex._renameat2_generic
-    run_test(3)
-else:
-    raise ValueError
 
+# main test
+for opt in sys.argv[1:]:
+    print(f"\n=== running {opt}")
+    if opt == 'native':
+        run_test(False)
+    elif opt == 'native-fd':
+        run_test(True)
+    elif opt == 'native-r':
+        run_test(2)
+    elif opt == 'native-l':
+        run_test(3)
+    elif opt == 'generic':
+        do_renameat2 = rename_ex._renameat2_generic
+        run_test(False)
+    elif opt == 'generic-fd':
+        do_renameat2 = rename_ex._renameat2_generic
+        run_test(True)
+    elif opt == 'generic-r':
+        do_renameat2 = rename_ex._renameat2_generic
+        run_test(2)
+    elif opt == 'generic-l':
+        do_renameat2 = rename_ex._renameat2_generic
+        run_test(3)
+    else:
+        raise ValueError
