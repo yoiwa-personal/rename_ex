@@ -47,7 +47,7 @@ sub _parse_arg ($$) {
     } else {
 	$dirfd = $cur;
     }
-    return ($dirfd + 0, $f . "");
+    return ($dirfd + 0, $f . "\0");
 }
 
 BEGIN {

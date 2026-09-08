@@ -1,3 +1,38 @@
+# -*- python -*-
+# Python library providing additional rename functionality
+#
+# https://github.com/yoiwa-personal/rename_ex/
+#
+# Copyright 2026 Yutaka OIWA <yutaka@oiwa.jp>.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""This module provide an interface to Linux's ability to rename files
+with additional functionality, or similar ones in other OSs.
+
+ - renameat2(src, dst, 0) is equivalent to os.rename in Linux.
+   It will replace the previous dst file if possible.
+
+ - renameat2(src, dst, RENAME_NOREPLACE) keeps "dst" file intact.
+   If the target file is existing, the call will fail.
+
+ - renameat2(src, dst, RENAME_EXCHANGE) exchanges the names of
+   two files.
+
+If OS supports dir_fd functionality, it will be provided in the
+same way in Python's os.rename provision.
+"""
+
 import ctypes
 import os
 import os.path
@@ -472,6 +507,7 @@ Current setting for using routine: {"native(forced)"  if use_native == -1 else "
 renameat = renameat2 # only optional "flags" is different
 
 def rename_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+    """Rename a file in src."""
     return renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=RENAME_NOREPLACE)
 
 def rename_exchange(src, dst, *, src_dir_fd=None, dst_dir_fd=None):

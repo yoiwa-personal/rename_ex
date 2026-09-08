@@ -55,7 +55,7 @@ Dirfd parameters are low-level OS handles in integer, opened with
 The dirfd parameters are fully supported, even with emulation below.
 
 There are experimental supports for MacOS Darwin and Windows.  Darwin uses `renameatx_np`,
-which almost has similar functionality to `renameat2`.
+which has almost the similar functionality to `renameat2`.
 Win32 uses MoveFileExW and transactional filesystem feature to implement RENAME_EXCHANGE functionality.
 
 ## Ruby
@@ -65,6 +65,8 @@ In Ruby, the library can be required in name `rename_ex`, and available as modul
 Named parameters are different from Python's, reflecting the names given in original `File.rename` methods.
 
 Dirfd parameters takes either an integer or a `Dir` object. For current directory, `nil` is used.
+
+There are experimental supports for MacOS Darwin as well.
 
 ## Perl
 
@@ -85,6 +87,9 @@ Both types of arguments can be mixed in a single call.
 The functions return a truth value on successful execution, and a false in failure.
 The OS error is stored in `$!`.
 
+Darwin support is via emulation only; native support requires external
+libraries not included in core distribution.
+
 # Emulations
 
 If the running environment is not Linux, the library will fallback to some limited emulations.
@@ -99,4 +104,14 @@ If the running environment is not Linux, the library will fallback to some limit
 
 (c) 2026 Yutaka OIWA <yutaka@oiwa.jp>.
 
-Distributed under Apache License 2.0.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
