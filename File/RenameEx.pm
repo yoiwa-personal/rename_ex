@@ -47,7 +47,7 @@ sub _parse_arg ($$) {
     } else {
 	$dirfd = $cur;
     }
-    return ($dirfd + 0, $f . "");
+    return ($dirfd + 0, $f . "\0");
 }
 
 BEGIN {
@@ -74,6 +74,38 @@ BEGIN {
 	    *renameat2 = \&_renameat2_linux;
 	};
 	warn "linux setup failed: $@" if $@;
+    } elsif ($^O eq 'darwin') {
+	eval {
+	    require POSIX;
+	    my $SYS_renameatx_np = 520;
+	    my $AT_FDCWD = -100; # linux specific value
+
+	    sub _convert_atx_np_flags ($) {
+		my $f = $_[0];
+		if ($f == 0) {
+		    return 0
+		} elsif ($f == RENAME_NOREPLACE) {
+		    return 4
+		} elsif ($f == RENAME_EXCHANGE) {
+		    return 2
+		} else {
+		    croak("invalid flags to renameat2 (renameatx_np)")
+		}
+	    }
+
+	    sub _renameat2_darwin ($$$) {
+		my ($from, $to, $flags) = @_;
+		(my $fromdir, $from) = _parse_arg($from, $AT_FDCWD);
+		(my $todir, $to) = _parse_arg($to, $AT_FDCWD);
+		$flags = _convert_atx_np_flags(int($flags + 0));
+		my $r = syscall($SYS_renameatx_np, $fromdir, $from, $todir, $to, $flags);
+		return ($r != -1);
+	    }
+	    $rename_noreplace_supported = $rename_exchange_supported =
+	      $rename_atfd_supported = "linux($SYS_renameatx_np)";
+	    *renameat2 = \&_renameat2_darwin;
+	};
+	warn "darwin setup failed: $@" if $@;
     } elsif ($^O eq 'MSWin32') {
         eval {
 	    require Win32API::File;
@@ -97,7 +129,6 @@ BEGIN {
 	$rename_noreplace_supported = "Win32API::File";
     }
 }
-# TODO: BSD/MacOS (renameatx_np)
 
 sub _statstr ($) {
     my @r = stat($_[0]);

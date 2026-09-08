@@ -1,6 +1,8 @@
-name: Verify Ruby on Darwin
+name: Verify Perl on Darwin
 
 on:
+  push:
+    branches: [ "macos" ]
   workflow_dispatch:
 
 jobs:
@@ -11,11 +13,11 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v7
 
-    - name: Set up Ruby
-      uses: ruby/setup-ruby@v1
+    - name: Set up Perl
+      uses: shogo82148/actions-setup-perl@v1
       with:
-        ruby-version: 4.0.0
+        perl-version: "5.38"
 
     - name: Run script and verify platform
       run: |
-        ruby test/rename_ex_test.rb native native-fd
+        perl test/RenameEx_test.pl native

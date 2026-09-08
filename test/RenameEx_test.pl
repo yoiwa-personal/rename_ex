@@ -173,7 +173,8 @@ sub run_test () {
 
 if ($0 eq __FILE__) {
     $_ = $ARGV[0];
-    if ($_ eq 'linux') {
+    print scalar File::RenameEx::_supported(), "\nRunning Perl $_ test\n\n";
+    if ($_ eq 'native') {
 	*do_renameat2 = \&renameat2;
 	run_test();
     } elsif ($_ eq 'generic') {
