@@ -84,7 +84,7 @@ elif sys.platform == "darwin":
             return 0
         elif flags == RENAME_NOREPLACE:
             return 4 # RENAME_EXCL
-        elif flag == RENAME_EXCHANGE:
+        elif flags == RENAME_EXCHANGE:
             return 2 # RENAME_SWAP
         else:
             raise ValueError.new("unknown flags")
