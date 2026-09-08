@@ -7,8 +7,26 @@ module RenameEx
   RENAME_NOREPLACE = 1
   RENAME_EXCHANGE = 2
   
+  FILESYSTEM_ENCODING = Encoding.find("filesystem")
+  private_constant :FILESYSTEM_ENCODING
+
+  def self._fnencode(fname)
+    fname.encode(FILESYSTEM_ENCODING)
+  end
+
+  def self._get_dirfd(dir)
+    if dir == nil
+      return AT_FDCWD
+    elsif dir.is_a?(Dir)
+      return dir.fineno
+    elsif dir.is_a?(Integer)
+      return dir
+    else
+      raise ValueError
+    end
+  end
+
   if RUBY_PLATFORM.include?('-linux')
-    
     module LIBC
       extend Fiddle::Importer
       dlload "libc.so.6"
@@ -16,13 +34,6 @@ module RenameEx
     end
     private_constant :LIBC
     AT_FDCWD = -100
-
-    FILESYSTEM_ENCODING = Encoding.find("filesystem")
-    private_constant :FILESYSTEM_ENCODING
-
-    def self._fnencode(fname)
-      fname.encode(FILESYSTEM_ENCODING)
-    end
 
     def self._os_renameat2(olddirfd, oldpath, newdirfd, newpath, flags)
       oldb = self._fnencode(oldpath)
@@ -34,7 +45,44 @@ module RenameEx
       end
       return r
     end
+
+    def _renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
+      from_dir_fd = RenameEx._get_dirfd(from_dir_fd)
+      to_dir_fd = RenameEx._get_dirfd(to_dir_fd)
+
+      return RenameEx._os_renameat2(from_dir_fd, from, to_dir_fd, to, flags)
+    end
     renameat2_supported = true
+
+  elsif RUBY_PLATFORM.include?('-darwin')
+    module LIBC
+      extend Fiddle::Importer
+      dlload 'libc.dylib'
+      extern 'int renameatx_np(int, const const char *, int, const char *, unsigned int)'
+    end
+    private_constant :LIBC
+    AT_FDCWD = -2
+
+    def self._os_renameatx_np(olddirfd, oldpath, newdirfd, newpath, flags)
+      oldb = self._fnencode(oldpath)
+      newb = self._fnencode(newpath)
+
+      r = LIBC::renameatx_np(olddirfd, oldb, newdirfd, newb, flags)
+      if r == -1
+        raise SystemCallError.new(Fiddle::last_error())
+      end
+      return r
+    end
+
+    def _renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
+      from_dir_fd = RenameEx._get_dirfd(from_dir_fd)
+      to_dir_fd = RenameEx._get_dirfd(to_dir_fd)
+
+      flags = [0, 4, 2][flags]
+      return RenameEx._os_renameatx_np(from_dir_fd, from, to_dir_fd, to, flags)
+    end
+    renameat2_supported = true
+
   end
 
   def self._mktempnode(dir, mkdir)
@@ -248,29 +296,7 @@ module RenameEx
   end
 
   if renameat2_supported
-    def renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
-      if from_dir_fd == nil
-        from_dir_fd = AT_FDCWD
-      elsif from_dir_fd.is_a?(Dir)
-        from_dir_fd = from_dir_fd.fineno
-      elsif from_dir_fd.is_a?(Integer)
-        #
-      else
-        raise ValueError
-      end
-
-      if to_dir_fd == nil
-        to_dir_fd = AT_FDCWD
-      elsif to_dir_fd.is_a?(Dir)
-        to_dir_fd = to_dir_fd.fineno
-      elsif to_dir_fd.is_a?(Integer)
-        #
-      else
-        raise ValueError
-      end
-
-      return RenameEx._os_renameat2(from_dir_fd, from, to_dir_fd, to, flags)
-    end
+    alias :renameat2 :_renameat2
   else
     alias :renameat2 :_renameat2_generic
   end

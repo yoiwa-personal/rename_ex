@@ -105,6 +105,11 @@ def try_ok(env, f, a, msg:"", success:true)
   end
 end
 
+def depends_on_arch(a, m)
+  m.each { |k, v| return v if RUBY_PLATFORM.include?(k) }
+  return a
+end
+
 def file_test(env)
     try_renameat2(env, "1", "3", 0, msg:"1")
     check_filetest(env, FileTest.method(:exist?), "1", msg:"1-1", success:false)
@@ -186,7 +191,8 @@ def link_test (env)
     try_renameat2(env, "1h2", "1", RENAME_NOREPLACE, success:false, msg:"14")
     # rename no replace raises error!
 
-    try_renameat2(env, "1", "1", RENAME_NOREPLACE, success:false, msg:"15")
+    try_renameat2(env, "1", "1", RENAME_NOREPLACE,
+                  success: depends_on_arch(false, {"darwin" => true}), msg:"15")
     check_file(env, "1", "1", msg:"14-1")
     check_file(env, "1h2", "1", msg:"14-2")
 end
@@ -241,16 +247,17 @@ def run_test (use_fd)
   }
 end
 
-opt = ARGV[0]
-if opt == 'linux'
-  run_test(false)
-elsif opt == 'linux-fd'
-  run_test(true)
-elsif opt == 'generic'
-  RenameEx.module_eval("module_function :_renameat2_generic")
-  $do_renameat2 = self.method(:_renameat2_generic)
-  run_test(false)
-else
-  p "unknown test"
-  exit 1
+for opt in ARGV
+  print "\n==== Running Ruby test #{opt}\n"
+  if opt == 'native'
+    run_test(false)
+  elsif opt == 'native-fd'
+    run_test(true)
+  elsif opt == 'generic'
+    RenameEx.module_eval("module_function :_renameat2_generic")
+    $do_renameat2 = self.method(:_renameat2_generic)
+    run_test(false)
+  else
+    p "unknown test"
+  end
 end

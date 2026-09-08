@@ -1,8 +1,6 @@
 name: Verify Python on Darwin
 
 on:
-  push:
-    branches: [ "macos" ]
   workflow_dispatch:
 
 jobs:

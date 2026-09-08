@@ -1,0 +1,23 @@
+name: Verify Ruby on Darwin
+
+on:
+  push:
+    branches: [ "macos" ]
+  workflow_dispatch:
+
+jobs:
+  test-on-darwin:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Set up Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: 4.0.0
+
+    - name: Run script and verify platform
+      run: |
+        ruby test/rename_ex_test.rb native native-fd
