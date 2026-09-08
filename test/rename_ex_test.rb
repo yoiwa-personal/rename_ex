@@ -2,6 +2,8 @@
 
 require_relative '../rename_ex'
 
+$is_win32 = Fiddle.respond_to?(:win32_last_error)
+
 include RenameEx
 extend RenameEx
 $do_renameat2 = self.method(:renameat2)
@@ -17,7 +19,7 @@ def read_file(env, fname, check: nil)
   open(env.prefix + fname, "r") { |f|
     s = f.read()
   }
-  print("reading #{env.prefix + fname} => #{s.inspect}\n")
+  print("    reading #{env.prefix + fname} => #{s.inspect}\n")
   if check
     return s == check
   else
@@ -182,7 +184,6 @@ def link_test (env)
     try_renameat2(env, "1h1", "1h2", RENAME_EXCHANGE, msg:"12")
     check_file(env, "1h1", "1", msg:"12-1")
     check_file(env, "1h2", "1", msg:"12-2")
-
     try_renameat2(env, "1h1", "1h2", 0, msg:"13")
     check_file(env, "1h1", "1", msg:"13-1")
     check_file(env, "1h2", "1", msg:"13-2")
@@ -200,50 +201,60 @@ end
 def rename_corner_test (env)
     Dir.mkdir(env.prefix + "9d1")
     Dir.mkdir(env.prefix + "9d2")
+    Dir.mkdir(env.prefix + "9d3")
     write_file(env, "9f1", "9")
     write_file(env, "9f2", "9")
 
     # NOREPLACE works, of course
     try_renameat2(env, "9d2", "9d1", RENAME_NOREPLACE, success:false, msg:"16-0 d->d")
 
-    # a directory does not overwrite a file
-    try_renameat2(env, "9d1", "9f1", 0, success:false, msg:"16-1 d->f")
-    # a directory DOES overwrite an empty directory!
-    try_renameat2(env, "9d2", "9d1", 0, msg:"16-2 d->d")
-    check_filetest(env, FileTest.method(:exist?), "9d2", success:false, msg:"16-2 exist")
-    check_filetest(env, FileTest.method(:exist?), "9d1", msg:"16-2 notexist")
+    # a directory does not overwrite a file (on Win32, does)
+    try_renameat2(env, "9d3", "9f3", 0, success:($is_win32), msg:"16-1 d->f")
+
+    # a directory DOES overwrite an empty directory! (on Win32, doesn't)
+    if not $is_win32
+      try_renameat2(env, "9d2", "9d1", 0, msg:"16-2 d->d")
+      check_filetest(env, FileTest.method(:exist?), "9d2", success:false, msg:"16-2 exist")
+      check_filetest(env, FileTest.method(:exist?), "9d1", msg:"16-2 notexist")
+    end
 
     # a directory does not overwrite non-empty directory
     try_renameat2(env, "9d1", "2d", 0, success:false, msg:"16-2b d->d")
 
     # a file does not overwrite an empty directory
     try_renameat2(env, "9f2", "9d1", 0, success:false, msg:"16-3 d->d")
-    check_file(env, "9f2", "9", msg:"16-3 read")
+    if not $is_win32
+      check_file(env, "9f2", "9", msg:"16-3 read")
+    end
 
-    try_renameat2(env, "1d", "9d1", 0, msg:"16-4 d->d")
-    check_file(env, "9d1/1f", "1f", msg:"16-4 read")
+    if not $is_win32
+      try_renameat2(env, "1d", "9d1", 0, msg:"16-4 d->d")
+      check_file(env, "9d1/1f", "1f", msg:"16-4 read")
 
-    try_renameat2(env, "9d1", "1d", 0, msg:"16-4 d->d")
-    check_file(env, "1d/1f", "1f", msg:"16-4 read")
-
+      try_renameat2(env, "9d1", "1d", 0, msg:"16-4 d->d")
+      check_file(env, "1d/1f", "1f", msg:"16-4 read")
+    end
     try_ok(env, File.method(:delete), "9f1", msg:"16-5-1")
     try_ok(env, File.method(:delete), "9f2", msg:"16-5-2")
 end
 
 def run_test (use_fd)
   Dir.mktmpdir { |d|
-    env = prepare(d, use_fd: use_fd)
-    file_test(env)
-    dir_test(env)
-    file_file_test(env)
-    dir_dir_test(env)
-    file_dir_test(env)
-    dir_file_test(env)
-    same_same_test(env)
-    file_noclobber_test(env)
-    link_test(env)
-    rename_corner_test(env)
-    Dir.chdir("/")
+    begin
+      env = prepare(d, use_fd: use_fd)
+      file_test(env)
+      dir_test(env)
+      file_file_test(env)
+      dir_dir_test(env)
+      file_dir_test(env)
+      dir_file_test(env)
+      same_same_test(env)
+      file_noclobber_test(env)
+      link_test(env)
+      rename_corner_test(env)
+    ensure
+      Dir.chdir("/")
+    end
   }
 end
 

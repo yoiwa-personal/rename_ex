@@ -30,7 +30,7 @@ module RenameEx
   private_constant :FILESYSTEM_ENCODING
 
   def self._fnencode(fname)
-    fname.encode(FILESYSTEM_ENCODING)
+    (fname + "\0").encode(FILESYSTEM_ENCODING)
   end
 
   def self._get_dirfd(dir)
@@ -71,7 +71,7 @@ module RenameEx
 
       return RenameEx._os_renameat2(from_dir_fd, from, to_dir_fd, to, flags)
     end
-    renameat2_supported = true
+    renameat2_supported = "linux"
 
   elsif RUBY_PLATFORM.include?('-darwin')
     module LIBC
@@ -100,8 +100,138 @@ module RenameEx
       flags = [0, 4, 2][flags]
       return RenameEx._os_renameatx_np(from_dir_fd, from, to_dir_fd, to, flags)
     end
-    renameat2_supported = true
+    renameat2_supported = "darwin"
 
+  elsif Fiddle.respond_to?(:win32_last_error)
+    module WIN32KERNEL_
+      extend Fiddle::Importer
+      dlload 'ktmw32.dll', 'kernel32.dll'
+      extern 'unsigned long MoveFileExW(void *, void *, unsigned long)'
+      extern 'unsigned long CommitTransaction(void*)'
+      extern 'unsigned long RollbackTransaction(void*)'
+      extern 'void* CreateTransaction(void*, void*, unsigned long, unsigned long, unsigned long, unsigned long, void*)'
+      extern 'unsigned long MoveFileTransactedW(void*, void*, void*, void*, unsigned long, void*)'
+      extern 'unsigned long CloseHandle(void*)'
+    end
+    private_constant :WIN32KERNEL_
+
+    def self._to_wstr(s)
+      (s + "\0").encode('UTF-16LE').force_encoding('BINARY')
+    end
+
+    def self._os_MoveFileEx(old, new, flags)
+      r = WIN32KERNEL_.MoveFileExW(self._to_wstr(old), self._to_wstr(new), flags.to_i)
+      if r == 0
+        err = Fiddle::win32_last_error
+ 	raise SystemCallError.new("MoveFileEx failed #{err}", err)
+      end
+    end
+
+    class NoTransactionSupported_ < StandardError; end
+
+    def self._rename_exchange_txf_win32(from, to, tmp)
+      err = nil
+      fromw = self._to_wstr(from)
+      tow = self._to_wstr(to)
+      tmpw = self._to_wstr(tmp)
+
+      20.times {
+        h_transaction = WIN32KERNEL_.CreateTransaction(nil, nil, 0, 0, 0, 0, nil)
+        if h_transaction.null? || h_transaction.to_i == -1
+          err = Fiddle::win32_last_error
+          if err == 6706 # ERROR_TM_INITIALIZATION_FAILED:
+            raise _NoTransactionSupported_
+          end
+          raise SystemCallError("CreateTransaction Failed #{err}", err)
+        end
+
+        begin
+          if WIN32KERNEL_.MoveFileTransactedW(fromw, tmpw, nil, nil, 0, h_transaction)
+            if WIN32KERNEL_.MoveFileTransactedW(tow, fromw, nil, nil, 0, h_transaction)
+              if WIN32KERNEL_.MoveFileTransactedW(tmpw, tow, nil, nil, 0, h_transaction)
+                if WIN32KERNEL_.CommitTransaction(h_transaction)
+                  return true
+                end
+              end
+            end
+          end
+          err = Fiddle::win32_last_error
+          if err == 2005 # ERROR_VOLUME_NOT_SUPPORTED
+            raise _NoTransactionSupported
+          elsif [6800, 6706, 6718].includes?(err)
+            # ERR_TRANSACTIONAL_CONFLICT, ERROR_TRANSACTION_ALREADY_ABORTED, ERROR_TRANSACTION_NOT_ACTIVE
+            next
+          else
+            WIN32KERNEL_.RollbackTransaction(h_transaction)
+            break
+          end
+        ensure
+          WIN32KERNEL_.CloseHandle(h_transaction)
+        end
+      }
+      raise SystemCallError("Exchanging File Failed #{err}", err)
+    end
+
+    def self._rename_exchange_win32(from, to, *, from_dir_fd: nil, to_dir_fd: nil)
+      raise ArgumentError.new("dirfd is not supported on Win32") unless from_dir_fd.nil? and to_dir_fd.nil?
+
+      fromstat = File.lstat(from)
+      tostat = File.lstat(to) # Pass-through FileNotFoundError and others
+
+      return if fromstat.dev == tostat.dev && fromstat.ino == tostat.ino
+
+      basedir = File.dirname(File.absolute_path(to))
+      tmpdir = Dir.mktmpdir("..rename.", tmpdir: basedir)
+      tmpname = tmpdir + "/" + ".rename.from"
+
+      begin
+        return self._rename_exchange_txf_win32(from, to, tmpname)
+      rescue NoTransactionSupported_
+        # other exceptions are transferred
+      ensure
+        Dir.rmdir(tmpdir)
+      end
+      #  if use_native == -1:
+      #      raise ValueError("renameat2(RENAME_EXCHANGE) is not available")
+      return self._rename_exchange_generic_by_rename(from, to)
+    end
+
+    def self._convert_flags_win32(flags)
+      if flags == 0
+        return 1 # MOVEFILE_REPLACE_EXISTING
+      elsif flags == RENAME_NOREPLACE
+        return 0
+      #elsif flags == RENAME_EXCHANGE
+      #  raise ValueError
+      else
+        raise ArgumentError.new("bad flags in renameat2")
+      end
+    end
+
+    def _renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
+      raise ArgumentError.new("dirfd is not supported on Win32") unless from_dir_fd.nil? and to_dir_fd.nil?
+      if flags == RENAME_EXCHANGE
+        return RenameEx._rename_exchange_win32(from, to)
+      end
+
+      fromstat = nil
+      tostat = nil
+      begin
+        fromstat = File.lstat(from)
+        tostat = File.lstat(to)
+        if fromstat.ino == tostat.ino && fromstat.dev == tostat.dev
+          # Win32 do rename over the same file with and WITHOUT MOVEFILE_REPLACE_EXISTING !
+          return if flags == 0 # (with case: in sync with POSIX)
+          raise Errno::EEXIST  # (without case: clearly a bug)
+        end
+      rescue Errno::ENOENT
+        #
+      end
+
+      RenameEx._os_MoveFileEx(from, to, RenameEx._convert_flags_win32(flags))
+    end
+
+    renameat2_supported = "win32"
   end
 
   def self._mktempnode(dir, mkdir)
@@ -143,28 +273,16 @@ module RenameEx
     tmpisdir = fromstat.directory?
     
     basedir = File.dirname(File.absolute_path(to))
-    if tmpisdir
-      tmpname = Dir.mktmpdir("..rename.", tmpdir: basedir)
-    else
-      fd, tmpname = self._mktempnode(basedir, false)
-      fd.close
-    end
+    tmpdir = Dir.mktmpdir("..rename.", tmpdir: basedir)
+    tmpname = tmpdir + "/.rename.from"
 
     begin
       File.rename(from, tmpname)
     rescue StandardError => e
-      if tmpisdir
-        begin
-          Dir.rmdir(tmpname)
-        rescue StandardError => ee
-          warn "rename_exchange: rmdir(recovery) tmporary dir failed: #{ee}"
-        end
-      else
-        begin
-          File.delete(tmpname)
-        rescue StandardError => ee
-          warn "rename_exchange: unlink(recovery) tmporary file failed: #{ee}"
-        end
+      begin
+        Dir.rmdir(tmpdir)
+      rescue StandardError => ee
+        warn "rename_exchange: rmdir(recovery) tmporary dir failed: #{ee}"
       end
       raise e
     end
@@ -174,6 +292,7 @@ module RenameEx
     rescue StandardError => e
       begin
         File.rename(tmpname, from)
+        Dir.rmdir(tmpdir)
       rescue StandardError => ee
         warn "rename_exchange: rename(recovery) 1 tmporary file failed: #{ee}"
       end
@@ -190,10 +309,16 @@ module RenameEx
       begin
         File.rename(from, to)
         File.rename(tmpname, from)
+        Dir.rmdir(tmpdir)
       rescue StandardError => ee
         warn "rename_exchange: rename(recovery) 2 tmporary file failed:#{ee}: #{from} is left as #{tmporary}"
       end
       raise e
+    end
+    begin
+      Dir.rmdir(tmpdir)
+    rescue StandardError => ee
+      warn "rename_exchange: removig tmpdir failed:#{ee}"
     end
   end
 

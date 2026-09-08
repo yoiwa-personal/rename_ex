@@ -14,7 +14,7 @@ Currently, this library supports the following environments:
    - supported in Python and Ruby; uses `renameatx_np` system call.
    - emulation only on Perl.
  - Windows: 
-   - supported on Python; MoveFileExW and Transactional NTFS are used.
+   - supported on Python and Ruby; MoveFileExW and Transactional NTFS are used.
    - some limited functionality in Perl.
 
 It also provides limited emulation routines for other POSIX compliant environments.
@@ -105,7 +105,7 @@ If the running environment is not supported, the library will fallback to some l
  - Atomicity is generally lost: there will be a small time window that gives inconsistent results.
    The details of limitation is implementation-specific and subject to change, but do not except even
    that some files are existing on the destination name during the operation. (Impossible for exchange-renaming two non-empty directories.)
- - The emulation is strongly depending on POSIX corner-case behavior, and will not work on non-POSIX underlying OSs (e.g. Win32).
+ - The emulation is strongly depending on POSIX corner-case behavior, and will not work on non-POSIX underlying OSs.
 
 # Author, Copyright and License
 
