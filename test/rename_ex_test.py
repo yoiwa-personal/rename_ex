@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -d
 
 import os, os.path, sys
 

@@ -46,13 +46,15 @@ from collections.abc import Sequence
 __all__ = ['RENAME_NOREPLACE', 'RENAME_EXCHANGE',
            'renameat2', 'rename_noreplace', 'rename_exchange']
 
+under_debug = sys.flags.debug
+
 arch = 'generic'
 renameat2_native_supported = False
 renameat2_undefflags_passthrough = False
 rename_exchange_native_supported = False
 renameat2_dirfd_supported = False
 
-use_native = True
+use_native = None # see _set_use_native
 
 # constants for user API (the same as Linux)
 RENAME_NOREPLACE = 1
@@ -305,7 +307,7 @@ def _mktemp_at(dir, dir_fd, mkdir=True):
         return fd, str(fname)
     raise FileExistsError(errno.EEXIST, "cannot make temporary file")
 
-def _rename_exchange_generic_by_rename(src, dst, *,
+def _rename_exchange_emulate_by_rename(src, dst, *,
                                        src_dir_fd=None, dst_dir_fd=None):
     srcstat = os.lstat(src, dir_fd=src_dir_fd)
     dststat = os.lstat(dst, dir_fd=dst_dir_fd)
@@ -351,7 +353,7 @@ def _rename_exchange_generic_by_rename(src, dst, *,
     os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
     return
 
-def _rename_exchange_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+def _rename_exchange_emulate(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     rename_f = _renameat2 if sys.platform == 'win32' else os.rename
     dir_dst = os.path.dirname(dst)
     if dir_dst == '': dir_dst = '.'
@@ -368,7 +370,7 @@ def _rename_exchange_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     if srcstat == dststat: return
 
     if stat.S_ISDIR(srcstat.st_mode) or stat.S_ISDIR(dststat.st_mode):
-        return _rename_exchange_generic_by_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        return _rename_exchange_emulate_by_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
     _fd, tmpdir = _mktemp_at(dir=dir_dst, dir_fd=dst_dir_fd, mkdir=True)
 
@@ -439,7 +441,7 @@ def _rename_exchange_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
         warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
         raise
 
-def _renameat2_generic_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+def _renameat2_emulate_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     try:
         os.lstat(dst, dir_fd=dst_dir_fd)
     except FileNotFoundError:
@@ -448,8 +450,19 @@ def _renameat2_generic_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
         raise FileExistsError
     return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     # link and unlink is another solution; however,
-    #  1) it will fail if only src directory is non-writable, and
-    #  2) it still makes race-condition around unlink.
+    #  1) it will fail if only src directory is non-writable,
+    #  2) it will not work with directory, and
+    #  3) it still makes race conditions around unlink.
+
+def _renameat2_noswapsupport(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
+    if (flags == 0 or flags == RENAME_NOREPLACE):
+        return _renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
+    if use_native == -1:
+        raise ValueError(f"renameat2({flags}) is not available")
+    if flags == RENAME_EXCHANGE:
+        return _rename_exchange_emulate(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    else:
+        raise ValueError(f"renameat2: unknown flag {flags}")
 
 def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
     if (os.stat not in os.supports_dir_fd):
@@ -458,43 +471,39 @@ def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
             raise NotImplementedError
     if (flags == 0):
         return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-    elif (flags == RENAME_NOREPLACE):
-        return _renameat2_generic_noreplace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-    elif (flags == RENAME_EXCHANGE):
-        return _rename_exchange_generic(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-
-def _renameat2_wrapper(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
-    if flags == 0:
-        if renameat2_native_supported and use_native:
-            return _renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=0)
-        return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-    elif flags == RENAME_NOREPLACE:
-        if renameat2_native_supported and use_native:
-            return _renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=RENAME_NOREPLACE)
-        if use_native == -1:
-            raise ValueError("renameat2(RENAME_NOREPLACE) is not available")
-        return _renameat2_generic_noreplace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    if use_native == -1:
+        raise ValueError(f"renameat2({flags}) is not available")
+    if flags == RENAME_NOREPLACE:
+        return _renameat2_emulate_noreplace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     elif flags == RENAME_EXCHANGE:
-        if rename_exchange_native_supported and use_native:
-            return _renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=RENAME_EXCHANGE)
-        if use_native == -1:
-            raise ValueError("renameat2(RENAME_EXCHANGE) is not available")
-        return _rename_exchange_generic(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+        return _rename_exchange_emulate(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     else:
-        if not (renameat2_native_supported and renameat2_undefflags_passthrough):
-            raise ValueError("unknown flags to renameat2")
-        return _renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
+        raise ValueError(f"renameat2: unknown flag {flags}")
+
+def _renameat2_choose():
+    if rename_exchange_native_supported and use_native:
+        return _renameat2
+    elif renameat2_native_supported and use_native:
+        return _renameat2_noswapsupport
+    else:
+        return _renameat2_generic
+
+def _renameat2_switcher(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
+    _renameat2_choose()(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
 
 def set_use_native(x):
+    global use_native
+    global renameat2
     if x not in (True, False, -1):
         raise ValueError
-    global use_native
-    use_native = x
-    global renameat2_ptr
-    if use_native and renameat2_native_supported and rename_exchange_native_supported and renameat2_undefflags_passthrough:
-        renameat2_ptr = _renameat2
+    if under_debug:
+        renameat2 = _renameat2_switcher
     else:
-        renameat2_ptr = _renameat2_wrapper
+        if ((use_native is not None) and
+            (not not use_native) != (not not x)):
+            raise ValueError("rename_at.set_use_native: only available under debugging")
+        renameat2 = _renameat2_choose()
+    use_native = x
 
 set_use_native(not (not renameat2_native_supported))
 
@@ -510,9 +519,6 @@ Current setting for used routine:        {"native(forced)"  if use_native == -1 
              "exchange_supported": rename_exchange_native_supported,
              "dirfd_supported": renameat2_dirfd_supported,
              "use_native": use_native }
-
-def renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
-    renameat2_ptr(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
 
 renameat = renameat2 # only optional "flags" is different
 
