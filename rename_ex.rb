@@ -45,6 +45,13 @@ module RenameEx
     end
   end
 
+  @@use_native = false
+  @@arch = 'generic'
+  @@renameat2_native_supported = false
+  @@renameat2_undefflags_passthrough = false
+  @@rename_exchange_native_supported = false
+  @@renameat2_dirfd_supported = false
+
   if RUBY_PLATFORM.include?('-linux')
     module LIBC
       extend Fiddle::Importer
@@ -71,7 +78,11 @@ module RenameEx
 
       return RenameEx._os_renameat2(from_dir_fd, from, to_dir_fd, to, flags)
     end
-    renameat2_supported = "linux"
+    @@arch = "linux"
+    @@renameat2_native_supported = "linux:renameat2"
+    @@renameat2_undefflags_passthrough = true
+    @@rename_exchange_native_supported = true
+    @@renameat2_dirfd_supported = true
 
   elsif RUBY_PLATFORM.include?('-darwin')
     module LIBC
@@ -100,7 +111,11 @@ module RenameEx
       flags = [0, 4, 2][flags]
       return RenameEx._os_renameatx_np(from_dir_fd, from, to_dir_fd, to, flags)
     end
-    renameat2_supported = "darwin"
+    @@arch = "darwin"
+    @@renameat2_native_supported = "darwin:renameatx_np"
+    @@renameat2_undefflags_passthrough = false
+    @@rename_exchange_native_supported = true
+    @@renameat2_dirfd_supported = true
 
   elsif Fiddle.respond_to?(:win32_last_error)
     module WIN32KERNEL_
@@ -191,8 +206,9 @@ module RenameEx
       ensure
         Dir.rmdir(tmpdir)
       end
-      #  if use_native == -1:
-      #      raise ValueError("renameat2(RENAME_EXCHANGE) is not available")
+      if @@use_native == -1
+        raise ValueError("renameat2(RENAME_EXCHANGE) is not available (txf not supported on this os/location)")
+      end
       return self._rename_exchange_generic_by_rename(from, to)
     end
 
@@ -231,7 +247,11 @@ module RenameEx
       RenameEx._os_MoveFileEx(from, to, RenameEx._convert_flags_win32(flags))
     end
 
-    renameat2_supported = "win32"
+    @@arch = "win32"
+    @@renameat2_native_supported = "win32:MoveFileExW"
+    @@renameat2_undefflags_passthrough = false
+    @@rename_exchange_native_supported = true
+    @@renameat2_dirfd_supported = false
   end
 
   def self._mktempnode(dir, mkdir)
@@ -439,24 +459,76 @@ module RenameEx
     end
   end
 
-  if renameat2_supported
-    alias :renameat2 :_renameat2
-  else
-    alias :renameat2 :_renameat2_generic
+  def _renameat2_wrapper(from, to, *, from_dir_fd:nil, to_dir_fd:nil, flags:0)
+    if flags == 0
+      if @@renameat2_native_supported && @@use_native
+        return _renameat2(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: 0)
+      else
+        return _renameat2_generic(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: 0)
+      end
+    elsif flags == RENAME_NOREPLACE
+      if @@renameat2_native_supported && @@use_native
+        return _renameat2(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: RENAME_NOREPLACE)
+      elsif @@use_native == -1
+        raise ArgumentError.new("renameat2(RENAME_NOREPLACE) is not available")
+      else
+        return _renameat2_generic(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: RENAME_NOREPLACE)
+      end
+    elsif flags == RENAME_EXCHANGE
+      if @@rename_exchange_native_supported && @@use_native
+        return _renameat2(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: RENAME_EXCHANGE)
+      elsif @@use_native == -1
+        raise ArgumentError.new("renameat2(RENAME_EXCHANGE) is not available")
+      else
+        if from_dir_fd != nil or to_dir_fd != nil
+          raise StandardError.new("dir_fd emulation not available")
+        end
+        return RenameEx._rename_exchange_generic(from, to)
+      end
+    else
+      if !(@@renameat2_native_supported and @@renameat2_undefflags_passthrough)
+        raise ArgumentError.new("unknown flags to renameat2")
+      else
+        return _renameat2(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: flags)
+      end
+    end
   end
+
+  def self.set_use_native(x)
+    raise ValueError unless [true, false, -1].include?(x)
+    @@use_native = x
+    if x && @@renameat2_native_supported && @@rename_exchange_native_supported
+      alias :renameat2 :_renameat2
+    else
+      alias :renameat2 :_renameat2_wrapper
+    end
+  end
+
+  self.set_use_native(!!@@renameat2_native_supported)
   
   module_function :renameat2, :_renameat2_generic
 
+  def self.support_status
+    return { str: "Architecture:                            #{@@arch}
+Native support for renameat2 or similar: #{@@renameat2_native_supported}
+Exchange is supported natively:          #{@@rename_exchange_native_supported}
+Dir_fd is supported:                     #{@@renameat2_dirfd_supported}
+Current setting for used  routine:       #{["native_forced", "native", "generic emulation"][@@use_native == -1 ? 0 : @@use_native == true ? 1 : 2]}
+
+",
+             arch: @@arch,
+             native_supported: @@renameat2_native_supported,
+             exchange_supported: @@rename_exchange_native_supported,
+             dirfd_supported: @@renameat2_dirfd_supported,
+             use_native: @@use_native }
+  end
+
   def rename_noreplace(from, to, *, from_dir_fd:nil, to_dir_fd:nil)
-    return renameat2(from, to,
-                     from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd,
-                     flags: RENAME_NOREPLACE)
+    return renameat2(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: RENAME_NOREPLACE)
   end
 
   def rename_exchange(from, to, *, from_dir_fd:nil, to_dir_fd:nil)
-    return renameat2(from, to,
-                     from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd,
-                     flags: RENAME_EXCHANGE)
+    return renameat2(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: RENAME_EXCHANGE)
   end
   module_function :rename_noreplace
   module_function :rename_exchange

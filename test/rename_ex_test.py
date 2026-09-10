@@ -53,19 +53,17 @@ def prepare(tobj, use_fd=False):
 
     return env
 
-do_renameat2 = renameat2
-    
 def try_renameat2(env, src, dest, flags, msg="", success=True):
     try:
         if env.use_fd == 2:
-            do_renameat2(src, env.prefix + dest,
+            renameat2(src, env.prefix + dest,
                          src_dir_fd=env.fd, dst_dir_fd=None, flags=flags)
         elif env.use_fd == 3:
-            do_renameat2(env.prefix + src, dest,
+            renameat2(env.prefix + src, dest,
                          src_dir_fd=None, dst_dir_fd=env.fd, flags=flags)
         else:
-            do_renameat2(src, dest,
-                         src_dir_fd=env.fd, dst_dir_fd=env.fd, flags=flags)
+            renameat2(src, dest,
+                      src_dir_fd=env.fd, dst_dir_fd=env.fd, flags=flags)
     except OSError as e:
         print(f"renameat2({src!r}, {dest!r}, flags={flags!r}) => {e!r}")
         if success == True:
@@ -157,7 +155,6 @@ def dir_dir_test(env):
 def same_same_test (env):
     try_renameat2(env, "1", "1", RENAME_EXCHANGE, msg="9-f")
     check_file(env, "1", "1", msg="9-1")
-    print(">>>test10")
     try_renameat2(env, "2d", "2d", RENAME_EXCHANGE, msg="10")
     check_file(env, "2d/2f", "2f", msg="10-2")
 
@@ -256,7 +253,7 @@ def run_test (use_fd):
 
 
 # main test
-print(rename_ex._get_native_support()["str"])
+print(rename_ex.support_status()["str"])
 
 for opt in sys.argv[1:]:
     print(f"\n=== running {opt}")
@@ -269,16 +266,16 @@ for opt in sys.argv[1:]:
     elif opt == 'native-l':
         run_test(3)
     elif opt == 'generic':
-        rename_ex._set_use_native(False)
+        rename_ex.set_use_native(False)
         run_test(False)
     elif opt == 'generic-fd':
-        rename_ex._set_use_native(False)
+        rename_ex.set_use_native(False)
         run_test(True)
     elif opt == 'generic-r':
-        rename_ex._set_use_native(False)
+        rename_ex.set_use_native(False)
         run_test(2)
     elif opt == 'generic-l':
-        rename_ex._set_use_native(False)
+        rename_ex.set_use_native(False)
         run_test(3)
     else:
         raise ValueError

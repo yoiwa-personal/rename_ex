@@ -46,10 +46,11 @@ from collections.abc import Sequence
 __all__ = ['RENAME_NOREPLACE', 'RENAME_EXCHANGE',
            'renameat2', 'rename_noreplace', 'rename_exchange']
 
+arch = 'generic'
 renameat2_native_supported = False
 renameat2_undefflags_passthrough = False
 rename_exchange_native_supported = False
-renameat_dirfd_supported = False
+renameat2_dirfd_supported = False
 
 use_native = True
 
@@ -86,6 +87,7 @@ if sys.platform == 'linux':
             er = ctypes.get_errno()
             raise OSError(er, os.strerror(er))
 
+    arch = 'linux'
     renameat2_native_supported = 'linux:renameat2'
     renameat2_undefflags_passthrough = True
     rename_exchange_native_supported = True
@@ -116,6 +118,7 @@ elif sys.platform == "darwin":
             er = ctypes.get_errno()
             raise OSError(er, os.strerror(er))
 
+    arch = 'darwin'
     renameat2_native_supported = 'darwin:renameatx_np'
     renameat2_undefflags_passthrough = False
     rename_exchange_native_supported = True
@@ -177,12 +180,11 @@ elif sys.platform == "win32":
             er = ctypes.get_last_error()
             raise ctypes.WinError(er)
 
+    arch = 'win32'
     renameat2_native_supported = 'win32:MoveFileExW'
     renameat2_undefflags_passthrough = False
     rename_exchange_native_supported = True
-    renameat_dirfd_supported = False
-
-    AT_FDCWD = -2
+    renameat2_dirfd_supported = False
 
     class _NoTransactionSupported(Exception):
         pass
@@ -483,26 +485,34 @@ def _renameat2_wrapper(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
             raise ValueError("unknown flags to renameat2")
         return _renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
 
-def _set_use_native(x):
+def set_use_native(x):
     if x not in (True, False, -1):
         raise ValueError
     global use_native
     use_native = x
-    global renameat2
-    if renameat2_native_supported and rename_exchange_native_supported and renameat2_undefflags_passthrough:
-        renameat2 = _renameat2
+    global renameat2_ptr
+    if use_native and renameat2_native_supported and rename_exchange_native_supported and renameat2_undefflags_passthrough:
+        renameat2_ptr = _renameat2
     else:
-        renameat2 = _renameat2_wrapper
+        renameat2_ptr = _renameat2_wrapper
 
-_set_use_native(True if renameat2_native_supported else False)
+set_use_native(not (not renameat2_native_supported))
 
-def _get_native_support():
-    return { "str": f"""Native support for renameat2 or similar: {renameat2_native_supported}
-Exchange is supported natively: {rename_exchange_native_supported}
-Current setting for using routine: {"native(forced)"  if use_native == -1 else "native" if use_native else "generic emulation"}""",
-      "native_supported": rename_exchange_native_supported,
-      "exchange_supported": rename_exchange_native_supported,
-      "use_native": use_native }
+def support_status():
+    return { "str": f"""Architecture:                            {arch}
+Native support for renameat2 or similar: {renameat2_native_supported}
+Exchange is supported natively:          {rename_exchange_native_supported}
+Dir_fd is supported:                     {renameat2_dirfd_supported}
+Current setting for used routine:        {"native(forced)"  if use_native == -1 else "native" if use_native else "generic emulation"}
+""",
+             "arch": arch,
+             "native_supported": renameat2_native_supported,
+             "exchange_supported": rename_exchange_native_supported,
+             "dirfd_supported": renameat2_dirfd_supported,
+             "use_native": use_native }
+
+def renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
+    renameat2_ptr(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
 
 renameat = renameat2 # only optional "flags" is different
 

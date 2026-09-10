@@ -6,7 +6,6 @@ $is_win32 = Fiddle.respond_to?(:win32_last_error)
 
 include RenameEx
 extend RenameEx
-$do_renameat2 = self.method(:renameat2)
 
 def write_file(env, fname, content)
   open(env.prefix + fname, "w") { |f|
@@ -55,8 +54,7 @@ end
 
 def try_renameat2(env, src, dest, flags, msg: "", success: true)
   begin
-    $do_renameat2.call(src, dest,
-                        from_dir_fd: env.fd, to_dir_fd: env.fd, flags: flags)
+    renameat2(src, dest, from_dir_fd: env.fd, to_dir_fd: env.fd, flags: flags)
   rescue SystemCallError => e
     print("renameat2(#{src.inspect}, #{dest.inspect}, flags:#{flags}) => #{e}\n")
     if success
@@ -204,6 +202,7 @@ def rename_corner_test (env)
     Dir.mkdir(env.prefix + "9d3")
     write_file(env, "9f1", "9")
     write_file(env, "9f2", "9")
+    write_file(env, "9f3", "9")
 
     # NOREPLACE works, of course
     try_renameat2(env, "9d2", "9d1", RENAME_NOREPLACE, success:false, msg:"16-0 d->d")
@@ -258,6 +257,8 @@ def run_test (use_fd)
   }
 end
 
+print RenameEx.support_status()[:str]
+
 for opt in ARGV
   print "\n==== Running Ruby test #{opt}\n"
   if opt == 'native'
@@ -265,8 +266,8 @@ for opt in ARGV
   elsif opt == 'native-fd'
     run_test(true)
   elsif opt == 'generic'
-    RenameEx.module_eval("module_function :_renameat2_generic")
-    $do_renameat2 = self.method(:_renameat2_generic)
+    RenameEx.set_use_native(false)
+    print RenameEx.support_status()[:str]
     run_test(false)
   else
     p "unknown test"
