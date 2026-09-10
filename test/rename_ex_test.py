@@ -206,7 +206,7 @@ def rename_corner_test (env):
     try_renameat2(env, "9d2", "9d1", RENAME_NOREPLACE, success=False, msg="16-0 d->d")
 
     # a directory does not overwrite a file (on win32, DOES)
-    try_renameat2(env, "9d3", "9f3", 0, success=depends_on_arch(False, {"win32": True}), msg="16-1 d->f")
+    try_renameat2(env, "9d3", "9f3", 0, success=False, msg="16-1 d->f")
 
     # a directory DOES overwrite an empty directory! (on win32, doesn't)
     if sys.platform != 'win32':
