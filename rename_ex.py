@@ -63,6 +63,12 @@ RENAME_EXCHANGE = 2
 _encoding = sys.getfilesystemencoding()
 _errors = sys.getfilesystemencodeerrors()
 
+def _reject_dirfd_ifunsupported(src_dir_fd, dst_dir_fd, forced=False, name="Error"):
+    if forced or (os.stat not in os.supports_dir_fd):
+        if (src_dir_fd != None or dst_dir_fd != None):
+            os.stat(src, dir_fd=src_dir_fd) # cause Error
+            raise ValueError("dirfd is not supported")
+
 def _fnencode(fname):
     if isinstance(fname, Path):
         fname = str(fname)
@@ -225,8 +231,7 @@ elif sys.platform == "win32":
         raise ctypes.WinError(err)
 
     def _rename_exchange_win32(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
-        if src_dir_fd is not None: raise ValueError("dirfd is not supported on Win32")
-        if dst_dir_fd is not None: raise ValueError("dirfd is not supported on Win32")
+        _reject_dirfd_ifunsupported(src_dir_fd, dst_dir_fd, forced=True, name="renameat2(win32,EXCHANGE)")
 
         srcstat = None
         dststat = None
@@ -263,8 +268,7 @@ elif sys.platform == "win32":
             raise ValueError("unknown flags")
     
     def _renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
-        if src_dir_fd is not None: raise ValueError("dirfd is not supported on Win32")
-        if dst_dir_fd is not None: raise ValueError("dirfd is not supported on Win32")
+        _reject_dirfd_ifunsupported(src_dir_fd, dst_dir_fd, forced=True, name="renameat2(win32)")
 
         if flags == RENAME_EXCHANGE:
             return _rename_exchange_win32(src, dst)
@@ -307,70 +311,8 @@ def _mktemp_at(dir, dir_fd, mkdir=True):
         return fd, str(fname)
     raise FileExistsError(errno.EEXIST, "cannot make temporary file")
 
-def _rename_exchange_emulate_by_rename(src, dst, *,
-                                       src_dir_fd=None, dst_dir_fd=None):
-    srcstat = os.lstat(src, dir_fd=src_dir_fd)
-    dststat = os.lstat(dst, dir_fd=dst_dir_fd)
-
-    if srcstat == dststat: return
-
-    basedir = os.path.dirname(dst)
-    _, tmpdir = _mktemp_at(dir=basedir, dir_fd=dst_dir_fd, mkdir=True)
-    tmpname = tmpdir + "/" + ".rename.from"
-    tmp_dir_fd = dst_dir_fd
-
-    try:
-        os.rename(src, tmpname, src_dir_fd=src_dir_fd, dst_dir_fd=tmp_dir_fd)
-    except Exception as e:
-        try: os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
-        except Exception as ee:
-            warnings.warn(f"rename_exchange: rmdir(recovery) temporary dir failed: {ee!r}")
-        raise e
-
-    try:
-        os.rename(dst, src, src_dir_fd=dst_dir_fd, dst_dir_fd=src_dir_fd)
-    except Exception as e:
-        try:
-            os.rename(tmpname, src, src_dir_fd=tmp_dir_fd, dst_dir_fd=src_dir_fd)
-            os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
-        except Exception as ee:
-            warnings.warn(f"rename_exchange: rename(recovery) 1 temporary file failed: {ee!r}")
-        if isinstance(e, FileNotFoundError):
-            # same file in different path (should be detected stat check)
-            return 0
-        raise e
-
-    try:
-        os.rename(tmpname, dst, src_dir_fd=dst_dir_fd, dst_dir_fd=dst_dir_fd)
-    except Exception as e:
-        try:
-            os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-            os.rename(tmpname, src, src_dir_fd=tmp_dir_fd, dst_dir_fd=src_dir_fd)
-            os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
-        except Exception as ee:
-            warnings.warn(f"rename_exchange: rename(recovery) 2 temporary file failed:{ee!r}: {src!r} is left as {tmpname!r}")
-        raise e
-    os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
-    return
-
-def _rename_exchange_emulate(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+def _rename_exchange_emulate_by_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None,                                        dir_dst=None, dir_src=None, srcstat=None, dststat=None):
     rename_f = _renameat2 if sys.platform == 'win32' else os.rename
-    dir_dst = os.path.dirname(dst)
-    if dir_dst == '': dir_dst = '.'
-    dir_src = os.path.dirname(src)
-    if dir_src == '': dir_src = '.'
-
-    if not (os.access(dir_dst, os.W_OK, effective_ids=_os_use_effective_ids, dir_fd=dst_dir_fd)
-            and os.access(dir_src, os.W_OK, effective_ids=_os_use_effective_ids, dir_fd=src_dir_fd)):
-        raise PermissionError
-
-    srcstat = os.lstat(src, dir_fd=src_dir_fd)
-    dststat = os.lstat(dst, dir_fd=dst_dir_fd) # Pass-through FileNotFoundError and others
-
-    if srcstat == dststat: return
-
-    if stat.S_ISDIR(srcstat.st_mode) or stat.S_ISDIR(dststat.st_mode):
-        return _rename_exchange_emulate_by_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
     _fd, tmpdir = _mktemp_at(dir=dir_dst, dir_fd=dst_dir_fd, mkdir=True)
 
@@ -441,6 +383,68 @@ def _rename_exchange_emulate(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
         warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
         raise
 
+def _rename_exchange_emulate_by_rename(src, dst, *,
+                                       src_dir_fd=None, dst_dir_fd=None,
+                                       dir_dst=None, dir_src=None, srcstat=None, dststat=None):
+    _, tmpdir = _mktemp_at(dir=dir_dst, dir_fd=dst_dir_fd, mkdir=True)
+    tmpname = tmpdir + "/" + ".rename.from"
+    tmp_dir_fd = dst_dir_fd
+
+    # this routine works with os.rename both replacing and non-replacing
+    try:
+        os.rename(src, tmpname, src_dir_fd=src_dir_fd, dst_dir_fd=tmp_dir_fd)
+    except Exception as e:
+        try: os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
+        except Exception as ee:
+            warnings.warn(f"rename_exchange: rmdir(recovery) temporary dir failed: {ee!r}")
+        raise e
+
+    try:
+        os.rename(dst, src, src_dir_fd=dst_dir_fd, dst_dir_fd=src_dir_fd)
+    except Exception as e:
+        try:
+            os.rename(tmpname, src, src_dir_fd=tmp_dir_fd, dst_dir_fd=src_dir_fd)
+            os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
+        except Exception as ee:
+            warnings.warn(f"rename_exchange: rename(recovery) 1 temporary file failed: {ee!r}")
+        if isinstance(e, FileNotFoundError):
+            # same file in different path (should be detected stat check)
+            return 0
+        raise e
+
+    try:
+        os.rename(tmpname, dst, src_dir_fd=dst_dir_fd, dst_dir_fd=dst_dir_fd)
+    except Exception as e:
+        try:
+            os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+            os.rename(tmpname, src, src_dir_fd=tmp_dir_fd, dst_dir_fd=src_dir_fd)
+            os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
+        except Exception as ee:
+            warnings.warn(f"rename_exchange: rename(recovery) 2 temporary file failed:{ee!r}: {src!r} is left as {tmpname!r}")
+        raise e
+    os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
+    return
+
+def _rename_exchange_emulate(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+    dir_dst = os.path.dirname(dst)
+    if dir_dst == '': dir_dst = '.'
+    dir_src = os.path.dirname(src)
+    if dir_src == '': dir_src = '.'
+
+    if not (os.access(dir_dst, os.W_OK, effective_ids=_os_use_effective_ids, dir_fd=dst_dir_fd)
+            and os.access(dir_src, os.W_OK, effective_ids=_os_use_effective_ids, dir_fd=src_dir_fd)):
+        raise PermissionError
+
+    srcstat = os.lstat(src, dir_fd=src_dir_fd)
+    dststat = os.lstat(dst, dir_fd=dst_dir_fd) # Pass-through FileNotFoundError and others
+
+    if srcstat == dststat: return
+
+    if stat.S_ISDIR(srcstat.st_mode) or stat.S_ISDIR(dststat.st_mode):
+        return _rename_exchange_emulate_by_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, dir_dst=dir_dst, dir_src=dir_src, srcstat=srcstat, dststat=dststat)
+    else:
+        return _rename_exchange_emulate_by_link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, dir_dst=dir_dst, dir_src=dir_src, srcstat=srcstat, dststat=dststat)
+
 def _renameat2_emulate_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     try:
         os.lstat(dst, dir_fd=dst_dir_fd)
@@ -465,10 +469,7 @@ def _renameat2_noswapsupport(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flag
         raise ValueError(f"renameat2: unknown flag {flags}")
 
 def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
-    if (os.stat not in os.supports_dir_fd):
-        if src_dir_fd != None or dst_dir_fd != None:
-            os.stat(src, dir_fd=src_dir_fd) # cause Error
-            raise NotImplementedError
+    _reject_dirfd_ifunsupported(src_dir_fd, dst_dir_fd, name="renameat2(generic)")
     if (flags == 0):
         return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     if use_native == -1:
