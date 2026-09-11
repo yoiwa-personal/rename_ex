@@ -56,6 +56,7 @@ rename_osrename_is_noreplacing = False # guessing
 renameat2_dirfd_supported = False
 
 use_native = None # see _set_use_native
+emulation_allowed = True
 
 # constants for user API (the same as Linux)
 RENAME_NOREPLACE = 1
@@ -262,7 +263,7 @@ elif sys.platform == "win32":
              os.rmdir(tmpdir)
 
         # no transaction fs support. os.link() may also be unsupported, use rename.
-        if use_native == -1:
+        if not emulation_allowed:
             raise ValueError("renameat2(RENAME_NOREPLACE) is not available")
         return _rename_exchange_emulate_by_rename(src, dst, dir_dst=dir_dst)
 
@@ -510,9 +511,9 @@ def _renameat2_emulate_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
 def _renameat2_noswapsupport(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
     if (flags == 0 or flags == RENAME_NOREPLACE):
         return _renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
-    if use_native == -1:
-        raise ValueError(f"renameat2({flags}) is not available")
     if flags == RENAME_EXCHANGE:
+        if not emulation_allowed:
+            raise ValueError(f"renameat2({flags}) is not available")
         return _rename_exchange_emulate(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     else:
         raise ValueError(f"renameat2: unknown flag {flags}")
@@ -524,7 +525,7 @@ def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
             return _renameat2_emulate_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
         else:
             return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-    if use_native == -1:
+    if not emulation_allowed:
         raise ValueError(f"renameat2({flags}) is not available")
     if flags == RENAME_NOREPLACE:
         return _renameat2_emulate_noreplace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
@@ -544,21 +545,26 @@ def _renameat2_choose():
 def _renameat2_switcher(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
     _renameat2_choose()(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
 
+def allow_emulation(b):
+    if b not in (True, False):
+        raise ValueError
+    global emulation_allowed
+    emulation_allowed = b
+
 def set_use_native(x):
     global use_native
     global renameat2
-    if x not in (True, False, -1):
+    if x not in (True, False):
         raise ValueError
     use_native = x
     if under_debug:
         renameat2 = _renameat2_switcher
     else:
-        if ((use_native is not None) and
-            (not not use_native) != (not not x)):
+        if ((use_native is not None) and use_native != x):
             raise ValueError("rename_at.set_use_native: only available under debugging")
         renameat2 = _renameat2_choose()
 
-set_use_native(not (not renameat2_native_supported))
+set_use_native(bool(renameat2_native_supported))
 
 def support_status():
     used_f = _renameat2_choose() if renameat2 is _renameat2_switcher else renameat2
@@ -571,7 +577,8 @@ def support_status():
 Native support for renameat2 or similar: {renameat2_native_supported}
 Exchange is supported natively:          {rename_exchange_native_supported}
 Dir_fd is supported:                     {renameat2_dirfd_supported}
-Current setting:                         {"native(forced)"  if use_native == -1 else "native" if use_native else "generic emulation"}
+Current setting:                         {"native" if use_native else "generic emulation"}
+Emulation allowed:                       {emulation_allowed!r}
 Currently-used routine:                  {used_routine} ({renameat2!r})
 """,
              "arch": arch,
