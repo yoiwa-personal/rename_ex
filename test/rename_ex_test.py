@@ -253,7 +253,9 @@ def run_test (use_fd):
 
 
 # main test
-print(rename_ex.support_status()["str"])
+if len(sys.argv) <= 1:
+    print(rename_ex.support_status()["str"])
+    sys.exit(0)
 
 for opt in sys.argv[1:]:
     print(f"\n=== running {opt}")
@@ -278,4 +280,5 @@ for opt in sys.argv[1:]:
         rename_ex.set_use_native(False)
         run_test(3)
     else:
-        raise ValueError
+        raise ValueError(f"unknown test {opt}")
+    print(rename_ex.support_status()["str"])

@@ -41,19 +41,28 @@ import tempfile
 import warnings
 import stat
 from pathlib import Path
+from collections import namedtuple
 from collections.abc import Sequence
 
 __all__ = ['RENAME_NOREPLACE', 'RENAME_EXCHANGE',
            'renameat2', 'rename_noreplace', 'rename_exchange']
 
-under_debug = sys.flags.debug
+_Environment = namedtuple('_Environment',
+                          ('arch', 'native_supported',
+                           'undef_flags_passthrough',
+                           'exchange_native_supported',
+                           'os_rename_nonreplacing',
+                           'dirfd_supported'))
 
-arch = 'generic'
-renameat2_native_supported = False
-renameat2_undefflags_passthrough = False
-rename_exchange_native_supported = False
-rename_osrename_is_noreplacing = False # guessing
-renameat2_dirfd_supported = False
+_env = _Environment(
+    arch = 'generic',
+    native_supported = False,
+    undef_flags_passthrough = False,
+    exchange_native_supported = False,
+    os_rename_nonreplacing = False, # guessing
+    dirfd_supported = False)
+
+under_debug = sys.flags.debug
 
 use_native = None # see _set_use_native
 emulation_allowed = True
@@ -113,12 +122,13 @@ if sys.platform == 'linux':
         if dst_dir_fd is None: dst_dir_fd = AT_FDCWD
         _os_renameat2(int(src_dir_fd), src, int(dst_dir_fd), dst, int(flags))
 
-    arch = 'linux'
-    renameat2_native_supported = 'linux:renameat2'
-    renameat2_undefflags_passthrough = True
-    rename_exchange_native_supported = True
-    rename_osrename_is_noreplacing = False
-    renameat2_dirfd_supported = True
+    _env = _Environment(
+        arch = 'linux',
+        native_supported = 'linux:renameat2',
+        undef_flags_passthrough = True,
+        exchange_native_supported = True,
+        os_rename_nonreplacing = False,
+        dirfd_supported = True)
 
 elif sys.platform == "darwin":
     _libc = ctypes.CDLL(None, use_errno=True)
@@ -155,12 +165,13 @@ elif sys.platform == "darwin":
         if dst_dir_fd is None: dst_dir_fd = AT_FDCWD
         _os_renameatx_np(int(src_dir_fd), src, int(dst_dir_fd), dst, _convert_flags_darwin(flags))
 
-    arch = 'darwin'
-    renameat2_native_supported = 'darwin:renameatx_np'
-    renameat2_undefflags_passthrough = False
-    rename_exchange_native_supported = True
-    rename_osrename_is_noreplacing = False
-    renameat_dirfd_supported = True
+    _env = _Environment(
+        arch = 'darwin',
+        native_supported = 'darwin:renameatx_np',
+        undef_flags_passthrough = False,
+        exchange_native_supported = True,
+        os_rename_nonreplacing = False,
+        dirfd_supported = True)
 
 elif sys.platform == "win32":
     from ctypes import wintypes
@@ -299,12 +310,13 @@ elif sys.platform == "win32":
 
     AT_FDCWD = None # no integer value, our _renameat2 accepts
 
-    arch = 'win32'
-    renameat2_native_supported = 'win32:MoveFileExW'
-    renameat2_undefflags_passthrough = False
-    rename_exchange_native_supported = True
-    rename_osrename_is_noreplacing = True
-    renameat2_dirfd_supported = False
+    _env = _Environment(
+        arch = 'win32',
+        native_supported = 'win32:MoveFileExW',
+        undef_flags_passthrough = False,
+        exchange_native_supported = True,
+        os_rename_nonreplacing = True,
+        dirfd_supported = False)
 
 # see tempfile.py from Python
 _os_open_flags = (os.O_RDWR | os.O_CREAT | os.O_EXCL
@@ -463,7 +475,7 @@ def _rename_exchange_emulate(src, dst, *, src_dir_fd=None, dst_dir_fd=None, rena
     dststat = os.lstat(dst, dir_fd=dst_dir_fd) # Pass-through FileNotFoundError and others
 
     if srcstat == dststat: return
-    if (rename_f is None and rename_osrename_is_noreplacing) or stat.S_ISDIR(srcstat.st_mode) or stat.S_ISDIR(dststat.st_mode):
+    if (rename_f is None and _env.os_rename_nonreplacing) or stat.S_ISDIR(srcstat.st_mode) or stat.S_ISDIR(dststat.st_mode):
         return _rename_exchange_emulate_by_rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, dir_dst=dir_dst)
     else:
         return _rename_exchange_emulate_by_link(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, dir_dst=dir_dst, rename_f=(rename_f or os.rename))
@@ -484,7 +496,7 @@ def _renameat2_emulate_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
 
 def _renameat2_emulate_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     # this really depends on that os.rename is non-replacing
-    assert rename_osrename_is_noreplacing
+    assert _env.os_rename_nonreplacing
 
     srcstat = None
     dststat = None
@@ -521,7 +533,7 @@ def _renameat2_noswapsupport(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flag
 def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
     _reject_dirfd_ifunsupported(src_dir_fd, dst_dir_fd, name="renameat2(generic)")
     if (flags == 0):
-        if rename_osrename_is_noreplacing:
+        if _env.os_rename_nonreplacing:
             return _renameat2_emulate_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
         else:
             return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
@@ -535,9 +547,9 @@ def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
         raise ValueError(f"renameat2: unknown flag {flags}")
 
 def _renameat2_choose():
-    if rename_exchange_native_supported and use_native:
+    if _env.exchange_native_supported and use_native:
         return _renameat2
-    elif renameat2_native_supported and use_native:
+    elif _env.native_supported and use_native:
         return _renameat2_noswapsupport
     else:
         return _renameat2_generic
@@ -564,7 +576,7 @@ def set_use_native(x):
             raise ValueError("rename_at.set_use_native: only available under debugging")
         renameat2 = _renameat2_choose()
 
-set_use_native(bool(renameat2_native_supported))
+set_use_native(bool(_env.native_supported))
 
 def support_status():
     used_f = _renameat2_choose() if renameat2 is _renameat2_switcher else renameat2
@@ -573,19 +585,19 @@ def support_status():
                     else "emulated" if used_f is _renameat2_generic
                     else "unknown")
 
-    return { "str": f"""Architecture:                            {arch}
-Native support for renameat2 or similar: {renameat2_native_supported}
-Exchange is supported natively:          {rename_exchange_native_supported}
-Dir_fd is supported:                     {renameat2_dirfd_supported}
+    d = _env._asdict()
+    d.update({
+        "str": f"""Architecture:                            {_env.arch}
+Native support for renameat2 or similar: {_env.native_supported}
+Exchange is supported natively:          {_env.exchange_native_supported}
+Dir_fd is supported:                     {_env.dirfd_supported}
 Current setting:                         {"native" if use_native else "generic emulation"}
 Emulation allowed:                       {emulation_allowed!r}
 Currently-used routine:                  {used_routine} ({renameat2!r})
 """,
-             "arch": arch,
-             "native_supported": renameat2_native_supported,
-             "exchange_supported": rename_exchange_native_supported,
-             "dirfd_supported": renameat2_dirfd_supported,
-             "use_native": use_native }
+        "allow_emulation": emulation_allowed,
+        "use_native": use_native})
+    return d
 
 renameat = renameat2 # only optional "flags" is different
 
