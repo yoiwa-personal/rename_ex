@@ -470,6 +470,7 @@ def _rename_exchange_emulate(src, dst, *, src_dir_fd=None, dst_dir_fd=None, rena
 def _renameat2_emulate_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     try:
         os.lstat(dst, dir_fd=dst_dir_fd)
+        # this check is required in Win32, when src and dst are same file with different name
     except FileNotFoundError:
         pass
     else:
@@ -494,47 +495,17 @@ def _renameat2_emulate_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
             return
             # Win32 do rename over the same file!
     except FileNotFoundError: pass
-
-    try:
-        # first try rename;
-        # in Win32, PermissionError is first raised over FileExistError
-        os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-    except FileExistsError as e:
+    else:
         s_isdir = stat.S_ISDIR(srcstat.st_mode)
         isdir = stat.S_ISDIR(dststat.st_mode)
 
         # simulate posix corner cases...
-        if (srcstat.st_ino == dststat.st_ino and srcstat.st_dev == dststat.st_dev):
-            return
         if (isdir and not s_isdir):
             raise IsADirectoryError
         if (s_isdir and not isdir):
             raise NotADirectoryError
 
-        if isdir:
-            # check it empty?
-            if len(os.listdir(dst)) != 0:
-                raise IsADirectoryError("target is non-empty directory")
-
-        _, tmpfile = _mktemp_at(
-            # this mktemp_at depends on non-replacing os.rename
-            os.path.dirname(dst), dir_fd=dst_dir_fd,
-            func = lambda f: os.rename(dst, f, src_dir_fd=dst_dir_fd, dst_dir_fd=dst_dir_fd))
-        try:
-            os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-        except Exception as e:
-            try:
-                os.rename(tmpfile, dst, src_dir_fd=dst_dir_fd, dst_dir_fd=dst_dir_fd)
-            except Exception as ee:
-                warnings.warn(f"rename_replace: cannot recover from temporary rename: file {dst!r} is left alone in {tempfile!r} {ee!r}")
-            raise e
-        try:
-            if isdir:
-                os.rmdir(tmpfile, dir_fd=dst_dir_fd)
-            else:
-                os.unlink(tmpfile, dir_fd=dst_dir_fd)
-        except Exception as ee:
-            raise RuntimeError(f"rename_replace: cannot remove temporary old-destination rename(recovery) 1 temporary file failed: {ee!r}") from ee
+    return os.replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
 def _renameat2_noswapsupport(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
     if (flags == 0 or flags == RENAME_NOREPLACE):
