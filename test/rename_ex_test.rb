@@ -24,6 +24,9 @@ def read_file(env, fname, check: nil)
   else
     return s
   end
+rescue SystemCallError => e
+  print("    reading #{env.prefix + fname} => #{e.inspect}\n")
+  return false
 end
 
 def prepare(tmpdir, use_fd: false)
