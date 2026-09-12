@@ -260,8 +260,10 @@ def run_test (use_fd)
   }
 end
 
-print RenameEx.support_status()[:str]
-
+if ARGV.length == 0
+  print RenameEx.support_status()[:str]
+  exit 0
+end
 for opt in ARGV
   print "\n==== Running Ruby test #{opt}\n"
   if opt == 'native'
@@ -275,4 +277,5 @@ for opt in ARGV
   else
     p "unknown test"
   end
+  print RenameEx.support_status()[:str]
 end

@@ -45,6 +45,21 @@ module RenameEx
     end
   end
 
+  def self._flags_to_display(flags)
+    { RENAME_NOREPLACE => "RENAME_NOREPLACE",
+      RENAME_EXCHANGE => "RENAME_EXCHANGE" }.fetch(flags, flags.to_s)
+  end
+
+  def self._fail_on_nativeonly(flags, cond: true)
+    if cond
+      raise ArgumentError.new("renameat2(#{self._flags_to_display(flags)}) is not available: use_native_only is set")
+    end
+  end
+
+  def self._fail_on_unknownflags(flags)
+    raise ArgumentError.new("renameat2: unknown flags #{flags}")
+  end
+
   ENV_TYPE_ = Struct.new("ENV_TYPE_", :arch, :native_supported,
                          :undef_flag_passthrough, :exchange_native_supported, :dirfd_supported, keyword_init: true)
   private_constant :ENV_TYPE_
@@ -52,7 +67,7 @@ module RenameEx
   @@under_debug = $-d
   
   @@use_native = nil ## see set_use_native below
-  @@emulation_allowed = true
+  @@use_native_only = 0
 
   @@env = ENV_TYPE_.new(
     arch: "generic",
@@ -91,7 +106,7 @@ module RenameEx
       return r
     end
 
-    def _renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
+    def _renameat2(from, to, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
       from_dir_fd = RenameEx._get_dirfd(from_dir_fd)
       to_dir_fd = RenameEx._get_dirfd(to_dir_fd)
 
@@ -125,7 +140,7 @@ module RenameEx
       return r
     end
 
-    def _renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
+    def _renameat2(from, to, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
       from_dir_fd = RenameEx._get_dirfd(from_dir_fd)
       to_dir_fd = RenameEx._get_dirfd(to_dir_fd)
 
@@ -244,7 +259,7 @@ module RenameEx
       raise WIN32KERNEL_::winsyserror(err, old, new, "_rename_exchange_txf_win32")
     end
 
-    def self._rename_exchange_win32(from, to, *, from_dir_fd: nil, to_dir_fd: nil)
+    def self._rename_exchange_win32(from, to, from_dir_fd: nil, to_dir_fd: nil)
       RenameEx._reject_dirfd(from_dir_fd, to_dir_fd)
 
       fromstat = File.lstat(from)
@@ -263,8 +278,8 @@ module RenameEx
       ensure
         Dir.rmdir(tmpdir)
       end
-      if ! @@emulation_allowed
-        raise ValueError("renameat2(RENAME_EXCHANGE) is not available (txf not supported on this os/location)")
+      if @@use_native_only >= 1
+        raise ArgumentError("renameat2(RENAME_EXCHANGE) is not available (TxF not supported on this os/location)")
       end
       return self._rename_exchange_emulate_by_rename(from, to, dir_to:basedir, fromstat:fromstat, tostat:tostat)
     end
@@ -281,7 +296,7 @@ module RenameEx
       end
     end
 
-    def _renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
+    def _renameat2(from, to, from_dir_fd: nil, to_dir_fd: nil, flags: 0)
       RenameEx._reject_dirfd(from_dir_fd, to_dir_fd)
       if flags == RENAME_EXCHANGE
         return RenameEx._rename_exchange_win32(from, to)
@@ -289,20 +304,21 @@ module RenameEx
 
       fromstat = nil
       tostat = nil
-      begin
-        fromstat = File.lstat(from)
-        tostat = File.lstat(to)
-        if fromstat.ino == tostat.ino && fromstat.dev == tostat.dev
-          # Win32 do rename over the same file with and WITHOUT MOVEFILE_REPLACE_EXISTING !
-          return if flags == 0
-	  # (with case: in sync with POSIX)
-          raise RenameEx._makeoserror(Errno::EEXIST::Errno, from, to, location:"_renameat2")
-	  # (without case: clearly a bug)
+      if use_native_only <= 1
+        begin
+          fromstat = File.lstat(from)
+          tostat = File.lstat(to)
+          if fromstat.ino == tostat.ino && fromstat.dev == tostat.dev
+            # Win32 do rename over the same file with and WITHOUT MOVEFILE_REPLACE_EXISTING !
+            return if flags == 0
+	    # (with case: in sync with POSIX)
+            raise RenameEx._makeoserror(Errno::EEXIST::Errno, from, to, location:"_renameat2")
+	    # (without case: clearly a bug)
+          end
+        rescue Errno::ENOENT
+          #
         end
-      rescue Errno::ENOENT
-        #
       end
-
       RenameEx._os_MoveFileEx(from, to, RenameEx._convert_flags_win32(flags))
     end
 
@@ -504,32 +520,34 @@ module RenameEx
     return File.rename(from, to)
   end
 
-  def _renameat2_noswapsupport(from, to, *, from_dir_fd:nil, to_dir_fd:nil, flags:0)
+  def _renameat2_noswapsupport(from, to, from_dir_fd:nil, to_dir_fd:nil, flags:0)
     RenameEx._reject_dirfd(from_dir_fd, to_dir_fd)
     if flags == 0 or flags == RENAME_NOREPLACE
       return _renameat2(from, to, from_dir_fd=from_dir_fd, to_dir_fd=to_dir_fd, flags=flags)
     elsif flags == RENAME_EXCHANGE
-      if not @@emulation_allowed
-        raise ArgumentError.new("renameat2(#{flags}) is not available")
+      if @@use_native_only >= 1
+        RenameEx._fail_on_nativeonly(flags)
       end
       return RenameEx._rename_exchange_emulate(from, to)
     else
-      raise ArgumentError.new("renameat2(#{flags}) is unknown")
+      RenameEx._fail_on_unknownflags(flags)
     end
   end
 
-  def _renameat2_generic(from, to, *, from_dir_fd:nil, to_dir_fd:nil, flags:0)
+  def _renameat2_generic(from, to, from_dir_fd:nil, to_dir_fd:nil, flags:0)
     RenameEx._reject_dirfd(from_dir_fd, to_dir_fd)
+    # The logic is slightly different from Python version, because we do not have os.replace and os.rename
     if flags == 0
-      return File.rename(from, to) # Ruby's File.rename is always replacing
-    elsif not @@emulation_allowed
-      raise ArgumentError.new("renameat2(#{flags}) is not available")
+      return File.rename(from, to)
+      # Ruby's File.rename is always replacing (though it's TOCTOW atomicity is questionable on some architecture)
+    elsif @@use_native_only >= 1
+      RenameEx._fail_on_nativeonly(flags)
     elsif flags == RENAME_NOREPLACE
       return RenameEx._renameat2_emulate_noreplace(from, to)
     elsif flags == RENAME_EXCHANGE
       return RenameEx._rename_exchange_emulate(from, to)
     else
-      raise ArgumentError.new("renameat2(#{flags}) is unknown")
+      RenameEx._fail_on_unknownflags(flags)
     end
   end
 
@@ -543,15 +561,29 @@ module RenameEx
     end
   end
 
-  def _renameat2_switcher(from, to, *, from_dir_fd:nil, to_dir_fd:nil, flags:0)
+  def _renameat2_switcher(from, to, from_dir_fd:nil, to_dir_fd:nil, flags:0)
     RenameEx.method(@@_renameat2_switched).call(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: flags)
+  end
+
+  def self.use_native_only(f)
+    f = int(f)
+    @@native_enforced = f
+  end
+
+  def self.set_use_native_only(x)
+    if [true, false].include?(x)
+      x = x ? 1 : 0
+    end
+    raise ArgumentError unless x.is_a?(Integer)
+    old = @@use_native_only
+    @@use_native_only = x
   end
 
   def self.allow_emulation(x)
     raise ArgumentError unless [true, false].include?(x)
-    @@emulation_allowed = x
+    self.use_native_only(! x)
   end
-  
+
   def self.set_use_native(x)
     raise ArgumentError unless [true, false].include?(x)
     @@use_native = x
@@ -567,6 +599,7 @@ module RenameEx
       when :_renameat2_generic
         alias :renameat2 :_renameat2_generic
       end
+      module_function :renameat2
     end
   end
 
@@ -580,7 +613,7 @@ Native support for renameat2 or similar: #{@@env.native_supported}
 Exchange is supported natively:          #{@@env.exchange_native_supported}
 Dir_fd is supported:                     #{@@env.dirfd_supported}
 Current Setting:                         #{@@use_native ? 'native' : 'generic emulation'}
-Emulation allowed:                       #{@@emulation_allowed}
+Emulation allowed:                       #{@@use_native_only == 0}
 Currently used routine:                  #{@@_renameat2_switched}
 
 ",
@@ -591,11 +624,11 @@ Currently used routine:                  #{@@_renameat2_switched}
              use_native: @@use_native }
   end
 
-  def rename_noreplace(from, to, *, from_dir_fd:nil, to_dir_fd:nil)
+  def rename_noreplace(from, to, from_dir_fd:nil, to_dir_fd:nil)
     return renameat2(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: RENAME_NOREPLACE)
   end
 
-  def rename_exchange(from, to, *, from_dir_fd:nil, to_dir_fd:nil)
+  def rename_exchange(from, to, from_dir_fd:nil, to_dir_fd:nil)
     return renameat2(from, to, from_dir_fd: from_dir_fd, to_dir_fd: to_dir_fd, flags: RENAME_EXCHANGE)
   end
   module_function :rename_noreplace
