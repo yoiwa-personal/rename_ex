@@ -45,15 +45,21 @@ module RenameEx
     end
   end
 
+  ENV_TYPE_ = Struct.new("ENV_TYPE_", :arch, :native_supported,
+                         :undef_flag_passthrough, :exchange_native_supported, :dirfd_supported, keyword_init: true)
+  private_constant :ENV_TYPE_
+
   @@under_debug = $-d
   
   @@use_native = nil ## see set_use_native below
   @@emulation_allowed = true
-  @@arch = 'generic'
-  @@renameat2_native_supported = false
-  @@renameat2_undefflags_passthrough = false
-  @@rename_exchange_native_supported = false
-  @@renameat2_dirfd_supported = false
+
+  @@env = ENV_TYPE_.new(
+    arch: "generic",
+    native_supported: false,
+    undef_flag_passthrough: false,
+    exchange_native_supported: false,
+    dirfd_supported: false)
 
   def self._reject_dirfd(from_dir_fd, to_dir_fd)
     if from_dir_fd != nil or to_dir_fd != nil
@@ -91,11 +97,13 @@ module RenameEx
 
       return RenameEx._os_renameat2(from_dir_fd, from, to_dir_fd, to, flags)
     end
-    @@arch = "linux"
-    @@renameat2_native_supported = "linux:renameat2"
-    @@renameat2_undefflags_passthrough = true
-    @@rename_exchange_native_supported = true
-    @@renameat2_dirfd_supported = true
+
+    @@env = ENV_TYPE_.new(
+      arch: "linux",
+      native_supported: "linux:renameat2",
+      undef_flag_passthrough: true,
+      exchange_native_supported: true,
+      dirfd_supported: true)
 
   elsif RUBY_PLATFORM.include?('-darwin')
     module LIBC
@@ -124,11 +132,13 @@ module RenameEx
       flags = [0, 4, 2][flags]
       return RenameEx._os_renameatx_np(from_dir_fd, from, to_dir_fd, to, flags)
     end
-    @@arch = "darwin"
-    @@renameat2_native_supported = "darwin:renameatx_np"
-    @@renameat2_undefflags_passthrough = false
-    @@rename_exchange_native_supported = true
-    @@renameat2_dirfd_supported = true
+
+    @@env = ENV_TYPE_.new(
+      arch: "darwin",
+      native_supported: "darwin:renameatx_np",
+      undef_flag_passthrough: false,
+      exchange_native_supported: true,
+      dirfd_supported: true)
 
   elsif Fiddle.respond_to?(:win32_last_error)
     module WIN32KERNEL_
@@ -296,11 +306,12 @@ module RenameEx
       RenameEx._os_MoveFileEx(from, to, RenameEx._convert_flags_win32(flags))
     end
 
-    @@arch = "win32"
-    @@renameat2_native_supported = "win32:MoveFileExW"
-    @@renameat2_undefflags_passthrough = false
-    @@rename_exchange_native_supported = true
-    @@renameat2_dirfd_supported = false
+    @@env = ENV_TYPE_.new(
+      arch: "win32",
+      native_supported: "win32:MoveFileExW",
+      undef_flag_passthrough: false,
+      exchange_native_supported: true,
+      dirfd_supported: false)
   end
 
   def self._mktempnode(dir, mkdir)
@@ -523,9 +534,9 @@ module RenameEx
   end
 
   def self._renameat2_choose()
-    if @@rename_exchange_native_supported && @@use_native
+    if @@env.exchange_native_supported && @@use_native
       return :_renameat2
-    elsif @@renameat2_native_supported && @@use_native
+    elsif @@env.native_supported && @@use_native
       return :_renameat2_noswapsupport
     else
       return :_renameat2_generic
@@ -559,24 +570,24 @@ module RenameEx
     end
   end
 
-  self.set_use_native(!! @@renameat2_native_supported)
+  self.set_use_native(!! @@env.native_supported)
   
   module_function :renameat2, :_renameat2_generic, :_renameat2_noswapsupport
 
   def self.support_status
-    return { str: "Architecture:                            #{@@arch}
-Native support for renameat2 or similar: #{@@renameat2_native_supported}
-Exchange is supported natively:          #{@@rename_exchange_native_supported}
-Dir_fd is supported:                     #{@@renameat2_dirfd_supported}
+    return { str: "Architecture:                            #{@@env.arch}
+Native support for renameat2 or similar: #{@@env.native_supported}
+Exchange is supported natively:          #{@@env.exchange_native_supported}
+Dir_fd is supported:                     #{@@env.dirfd_supported}
 Current Setting:                         #{@@use_native ? 'native' : 'generic emulation'}
 Emulation allowed:                       #{@@emulation_allowed}
 Currently used routine:                  #{@@_renameat2_switched}
 
 ",
-             arch: @@arch,
-             native_supported: @@renameat2_native_supported,
-             exchange_supported: @@rename_exchange_native_supported,
-             dirfd_supported: @@renameat2_dirfd_supported,
+             arch: @@env.arch,
+             native_supported: @@env.native_supported,
+             exchange_supported: @@env.exchange_native_supported,
+             dirfd_supported: @@env.dirfd_supported,
              use_native: @@use_native }
   end
 
