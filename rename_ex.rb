@@ -61,6 +61,10 @@ module RenameEx
     end
   end    
 
+  def self._makeoserror(errno, from, to, location: nil)
+    return SystemCallError.new("(#{from}, #{to})", errno, location)
+  end
+
   if RUBY_PLATFORM.include?('-linux')
     module LIBC
       extend Fiddle::Importer
@@ -76,7 +80,7 @@ module RenameEx
 
       r = LIBC::renameat2(olddirfd, oldb, newdirfd, newb, flags)
       if r == -1
-        raise SystemCallError.new(Fiddle::last_error())
+        raise self._makeoserror(Fiddle::last_error(), oldpath, newpath, location:"_os_renameat2")
       end
       return r
     end
@@ -108,7 +112,7 @@ module RenameEx
 
       r = LIBC::renameatx_np(olddirfd, oldb, newdirfd, newb, flags)
       if r == -1
-        raise SystemCallError.new(Fiddle::last_error())
+        raise self._makeoserror(Fiddle::last_error(), oldpath, newpath, location:"_os_renameatx_np")
       end
       return r
     end
@@ -136,6 +140,40 @@ module RenameEx
       extern 'void* CreateTransaction(void*, void*, unsigned long, unsigned long, unsigned long, unsigned long, void*)'
       extern 'unsigned long MoveFileTransactedW(void*, void*, void*, void*, unsigned long, void*)'
       extern 'unsigned long CloseHandle(void*)'
+
+      ERRMAP = { # from win32.c, only really-core errors
+        2 => Errno::ENOENT::Errno, # ERROR_FILE_NOT_FOUND
+        3 => Errno::ENOENT::Errno, # ERROR_PATH_NOT_FOUND
+        5 => Errno::EACCES::Errno, # ERROR_ACCESS_DENIED
+        15 => Errno::ENOENT::Errno, # ERROR_INVALID_DRIVE
+        16 => Errno::EACCES::Errno, # ERROR_CURRENT_DIRECTORY
+        17 => Errno::EXDEV::Errno, # ERROR_NOT_SAME_DEVICE
+        53 => Errno::ENOENT::Errno, # ERROR_BAD_NETPATH
+        55 => Errno::ENOENT::Errno, # ERROR_DEV_NOT_EXIST
+        64 => Errno::ENOENT::Errno, # ERROR_NETNAME_DELETED
+        67 => Errno::ENOENT::Errno, # ERROR_BAD_NET_NAME
+        80 => Errno::EEXIST::Errno, # ERROR_FILE_EXISTS
+      }
+      begin
+        KNOWNERRORMAX = Errno.constants.map {|x| Errno.const_get(x).const_get(:Errno)}.filter{|x| x < 1000}.max
+      rescue
+        KNOWNERRORMAX = 140
+      end
+      def map_fiddle_to_errno(x)
+        # Ruby design bug: result of GetLastError is to be given to SystemCallError,
+        # but smaller GetLastError numbers will get mapped to invalid errno.
+        if x < 0 || x > KNOWNERRORMAX
+          return x
+        else
+          return ERRMAP.fetch(x, Errno::EINVAL::Errno)
+        end
+      end
+      def winsyserror(err, from, to, location)
+        SystemCallError.new("(##{err}) - (#{from}, #{to})",
+                            WIN32KERNEL_::map_fiddle_to_errno(err),
+                            location)
+      end
+      module_function :map_fiddle_to_errno, :winsyserror
     end
     private_constant :WIN32KERNEL_
 
@@ -147,7 +185,7 @@ module RenameEx
       r = WIN32KERNEL_.MoveFileExW(self._to_wstr(old), self._to_wstr(new), flags.to_i)
       if r == 0
         err = Fiddle::win32_last_error
- 	raise SystemCallError.new("MoveFileEx failed #{err}", err)
+ 	raise WIN32KERNEL_::winsyserror(err, old, new, "MoveFileExW")
       end
     end
 
@@ -166,7 +204,7 @@ module RenameEx
           if err == 6706 # ERROR_TM_INITIALIZATION_FAILED:
             raise _NoTransactionSupported_
           end
-          raise SystemCallError("CreateTransaction Failed #{err}", err)
+ 	  raise WIN32KERNEL_::winsyserror(err, old, new, "CreateTransaction")
         end
 
         begin
@@ -193,7 +231,7 @@ module RenameEx
           WIN32KERNEL_.CloseHandle(h_transaction)
         end
       }
-      raise SystemCallError("Exchanging File Failed #{err}", err)
+      raise WIN32KERNEL_::winsyserror(err, old, new, "_rename_exchange_txf_win32")
     end
 
     def self._rename_exchange_win32(from, to, *, from_dir_fd: nil, to_dir_fd: nil)
@@ -246,8 +284,10 @@ module RenameEx
         tostat = File.lstat(to)
         if fromstat.ino == tostat.ino && fromstat.dev == tostat.dev
           # Win32 do rename over the same file with and WITHOUT MOVEFILE_REPLACE_EXISTING !
-          return if flags == 0 # (with case: in sync with POSIX)
-          raise Errno::EEXIST  # (without case: clearly a bug)
+          return if flags == 0
+	  # (with case: in sync with POSIX)
+          raise RenameEx._makeoserror(Errno::EEXIST::Errno, from, to, location:"_renameat2")
+	  # (without case: clearly a bug)
         end
       rescue Errno::ENOENT
         #
@@ -426,7 +466,7 @@ module RenameEx
     dir_to = File.dirname(File.absolute_path(to))
 
     if not (FileTest.writable?(dir_from) && FileTest.writable?(dir_to))
-      raise Errno::EPERM
+      raise self._makeoserror(Errno::EPERM::Errno, from, to, location:"_renameat2_emulate_noreplace")
     end
 
     fromstat = File.lstat(from)
@@ -446,7 +486,7 @@ module RenameEx
   def self._renameat2_emulate_noreplace(from, to)
     begin
       File.lstat(to)
-      raise Errno::EEXIST
+      raise self._makeoserror(Errno::EEXIST::Errno, from, to, location:"_renameat2_emulate_noreplace")
     rescue Errno::ENOENT
       # ok
     end
