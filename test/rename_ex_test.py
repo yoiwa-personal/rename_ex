@@ -41,7 +41,7 @@ def prepare(tobj, use_fd=False):
     env.use_fd = use_fd
     env.prefix = prefix
     env.fd = fd
-        
+
     os.mkdir(prefix + "1d")
     os.mkdir(prefix + "2d")
     write_file(env, "1", "1")
@@ -65,11 +65,13 @@ def try_renameat2(env, src, dest, flags, msg="", success=True):
             renameat2(src, dest,
                       src_dir_fd=env.fd, dst_dir_fd=env.fd, flags=flags)
     except OSError as e:
-        print(f"renameat2({src!r}, {dest!r}, flags={flags!r}) => {e!r}")
+        print(f"renameat2({src!r}, {dest!r}, flags={flags!r}) => {e!r}[{e.filename}, {e.filename2}]")
         if success == True:
             warn(f"test ${msg} failed: {e!r}")
         else:
             pass
+    except Exception as e:
+        print(f"renameat2({src!r}, {dest!r}, flags={flags!r}) => ERROR {e!r}")
     else:
         print(f"renameat2({src!r}, {dest!r}, flags={flags!r}) => OK")
         if success == False:
@@ -90,7 +92,7 @@ def check_filetest(env, fun, a, msg="", success=True):
             warn(f"test ${msg} failed: filetest mismatch: {r!r} <> {success!r}")
     except OSError as e:
         warn(f"test ${msg} failed: {e!r}")
-    
+
 def try_ok(env, f, a, msg="", success=True):
     try:
         f(env.prefix + a)

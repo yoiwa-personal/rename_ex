@@ -40,6 +40,7 @@ import sys
 import tempfile
 import warnings
 import stat
+import errno
 from pathlib import Path
 from collections import namedtuple
 from collections.abc import Sequence
@@ -78,7 +79,7 @@ def _reject_dirfd_ifunsupported(src_dir_fd, dst_dir_fd, forced=False, name="Erro
     if forced or (os.stat not in os.supports_dir_fd):
         if (src_dir_fd != None or dst_dir_fd != None):
             os.stat(src, dir_fd=src_dir_fd) # cause Error
-            raise ValueError("dirfd is not supported")
+            raise ValueError(f"{name}: dirfd is not supported")
 
 def _fnencode(fname):
     if isinstance(fname, Path):
@@ -88,6 +89,9 @@ def _fnencode(fname):
     else:
         return fname.encode(_encoding, errors=_errors)
 
+def _oserror(errno, src, dst):
+    return OSError(errno, os.strerror(errno), src, None, dst)
+    
 # Rules-of-thumb for naming OS-specific routine naming:
 #    _renameat2 has Python-level common interface:
 #      receives None for dir_fd, common signature, strings are Python-native
@@ -113,7 +117,7 @@ if sys.platform == 'linux':
 
         if r != 0:
             er = ctypes.get_errno()
-            raise OSError(er, os.strerror(er))
+            raise OSError(er, os.strerror(er), oldpath, None, newpath)
 
     AT_FDCWD = -100
 
@@ -146,7 +150,7 @@ elif sys.platform == "darwin":
 
         if r != 0:
             er = ctypes.get_errno()
-            raise OSError(er, os.strerror(er))
+            raise OSError(er, os.strerror(er), oldpath, None, newpath)
 
     def _convert_flags_darwin(flags):
         if flags == 0:
@@ -343,7 +347,7 @@ def _mktemp_at(dir, dir_fd, mkdir=True, func=None):
         except FileExistsError:
             continue
         return fd, str(fname)
-    raise FileExistsError(errno.EEXIST, "cannot make temporary file")
+    raise OSError(errno.EBUSY, "cannot make temporary file", dir)
 
 def _rename_exchange_emulate_by_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, dir_dst=None, rename_f=os.rename):
     _fd, tmpdir = _mktemp_at(dir=dir_dst, dir_fd=dst_dir_fd, mkdir=True)
@@ -359,8 +363,7 @@ def _rename_exchange_emulate_by_link(src, dst, *, src_dir_fd=None, dst_dir_fd=No
             os.rmdir(tmpdir, dir_fd=dst_dir_fd)
         except Exception as ee:
             warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
-        raise
-
+        raise e
     try:
         os.link(dst, tmpdst, src_dir_fd=dst_dir_fd, dst_dir_fd=tmp_dir_fd)
     except Exception as e:
@@ -369,7 +372,7 @@ def _rename_exchange_emulate_by_link(src, dst, *, src_dir_fd=None, dst_dir_fd=No
             os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
         except Exception as ee:
             warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
-        raise
+        raise e
     
     # critical section: files may be lost
     try:
@@ -382,7 +385,7 @@ def _rename_exchange_emulate_by_link(src, dst, *, src_dir_fd=None, dst_dir_fd=No
             os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
         except Exception as ee:
             warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
-        raise
+        raise e
     
     try:
         rename_f(tmpsrc, dst, src_dir_fd=tmp_dir_fd, dst_dir_fd=dst_dir_fd)
@@ -400,7 +403,7 @@ def _rename_exchange_emulate_by_link(src, dst, *, src_dir_fd=None, dst_dir_fd=No
             os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
         except Exception as ee:
             warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
-        raise
+        raise e
 
     # here, the directory should be empty:
     # however, if src and dst are the same file, tmp files are left.
@@ -413,7 +416,7 @@ def _rename_exchange_emulate_by_link(src, dst, *, src_dir_fd=None, dst_dir_fd=No
         os.rmdir(tmpdir, dir_fd=tmp_dir_fd)
     except Exception as ee:
         warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ee!r}")
-        raise
+        raise e
 
 def _rename_exchange_emulate_by_rename(src, dst, *,
                                        src_dir_fd=None, dst_dir_fd=None,
@@ -469,7 +472,7 @@ def _rename_exchange_emulate(src, dst, *, src_dir_fd=None, dst_dir_fd=None, rena
 
     if not (os.access(dir_dst, os.W_OK, effective_ids=_os_use_effective_ids, dir_fd=dst_dir_fd)
             and os.access(dir_src, os.W_OK, effective_ids=_os_use_effective_ids, dir_fd=src_dir_fd)):
-        raise PermissionError
+        raise _oserror(errno.EPERM, src, dst)
 
     srcstat = os.lstat(src, dir_fd=src_dir_fd)
     dststat = os.lstat(dst, dir_fd=dst_dir_fd) # Pass-through FileNotFoundError and others
@@ -487,7 +490,7 @@ def _renameat2_emulate_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
     except FileNotFoundError:
         pass
     else:
-        raise FileExistsError
+        raise _oserror(errno.EEXIST, src, dst)
     return os.rename(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
     # link and unlink is another solution; however,
     #  1) it will fail if only src directory is non-writable,
@@ -514,9 +517,9 @@ def _renameat2_emulate_replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
 
         # simulate posix corner cases...
         if (isdir and not s_isdir):
-            raise IsADirectoryError
+            raise _oserror(errno.EISDIR, src, dst)
         if (s_isdir and not isdir):
-            raise NotADirectoryError
+            raise _oserror(errno.ENOTDIR, src, dst)
 
     return os.replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
 
