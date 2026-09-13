@@ -608,7 +608,7 @@ def set_use_native(x):
     if under_debug:
         renameat2 = _renameat2_switcher
     else:
-        if ((use_native is not None) and use_native != old):
+        if ((old is not None) and use_native != old):
             raise ValueError("rename_at.set_use_native: only available under debugging")
         renameat2 = _renameat2_choose()
     return old
