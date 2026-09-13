@@ -211,17 +211,26 @@ elif sys.platform == "win32":
     ]
     _ktmw32.CreateTransaction.restype = wintypes.HANDLE
     
+    _ktmw32.CommitTransaction.argtypes = [wintypes.HANDLE]
+    _ktmw32.CommitTransaction.restype = wintypes.BOOL
+
+    _ktmw32.RollbackTransaction.argtypes = [wintypes.HANDLE]
+    _ktmw32.RollbackTransaction.restype = wintypes.BOOL
+
     _kernel32.MoveFileTransactedW.argtypes = [
         wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPVOID, 
         wintypes.LPVOID, wintypes.DWORD, wintypes.HANDLE
     ]
     _kernel32.MoveFileTransactedW.restype = wintypes.BOOL
     
-    _ktmw32.CommitTransaction.argtypes = [wintypes.HANDLE]
-    _ktmw32.CommitTransaction.restype = wintypes.BOOL
-    
-    _ktmw32.RollbackTransaction.argtypes = [wintypes.HANDLE]
-    _ktmw32.RollbackTransaction.restype = wintypes.BOOL
+    _kernel32.CreateDirectoryTransactedW.argtypes = [
+        wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPVOID,
+        wintypes.HANDLE]
+    _kernel32.CreateDirectoryTransactedW.restype = wintypes.BOOL
+
+    _kernel32.RemoveDirectoryTransactedW.argtypes = [
+        wintypes.LPCWSTR, wintypes.HANDLE]
+    _kernel32.RemoveDirectoryTransactedW.restype = wintypes.BOOL
 
     def _os_MoveFileEx(old, new, flags):
         r = _kernel32.MoveFileExW(old, new, flags)
@@ -231,8 +240,10 @@ elif sys.platform == "win32":
 
     class _NoTransactionSupported(Exception):
         pass
+    class _TransactionAborted(Exception):
+        pass
 
-    def _rename_exchange_txf_win32(src, dst, tmp):
+    def _rename_exchange_txf_win32(src, dst, dstdir):
         err = None
 
         for seq in range(tempfile.TMP_MAX):
@@ -243,18 +254,43 @@ elif sys.platform == "win32":
                     raise _NoTransactionSupported
                 raise ctypes.WinError(err)
 
-            success = False
+            def __mkdir(f):
+                if _kernel32.CreateDirectoryTransactedW(None, f, None, h_transaction):
+                    return 0
+                err = ctypes.get_last_error()
+                if err == 183: # ERROR_FILE_EXISTS
+                    raise FileExistsError() # mktemp_at to retry
+                if err in (2005, 6832):
+                    raise _NoTransactionSupported
+                if err in (6800, 6706, 6718):
+                    raise _TransactionAborted
+                raise ctypes.WinError(err)
+
+            tmpdir = false
+            try:
+                _, tmpdir = _mktemp_at(dir=dstdir, dir_fd=None, func=__mkdir)
+            except _TransactionAborted:
+                continue
+            # except _TransactionAborted: propagate to parent
+            finally:
+                if tmpdir == false:
+                    _kernel32.CloseHandle(h_transaction)
+
+            tmp = tmpdir + "/" + ".rename.from"
 
             try:
                 if _kernel32.MoveFileTransactedW(src, tmp, None, None, 0, h_transaction):
                  if _kernel32.MoveFileTransactedW(dst, src, None, None, 0, h_transaction):
                   if _kernel32.MoveFileTransactedW(tmp, dst, None, None, 0, h_transaction):
+                   if not _kernel32.RemoveDirectoryTransactedW(tmpdir, h_transaction):
+                       err = ctypes.get_last_error()
+                       warnings.warn(f"rename_exchange: cleaning tmpdir failed: {ctypes.WinError(err)!r}")
                    if _ktmw32.CommitTransaction(h_transaction):
                         return True
 
                 err = ctypes.get_last_error()
                 if err in (2005, 6832): # ERROR_VOLUME_NOT_SUPPORTED, ERROR_TRANSACTIONAL_OPEN_NOT_ALLOWED
-                    raise _NoTransactionSupported
+                    raise _NoTransactionSupported # propagate to parent
                 if err in (6800, 6706, 6718):
                     # ERR_TRANSACTIONAL_CONFLICT, ERROR_TRANSACTION_ALREADY_ABORTED, ERROR_TRANSACTION_NOT_ACTIVE
                     continue
@@ -275,25 +311,19 @@ elif sys.platform == "win32":
         dststat = os.lstat(dst) # FileNotFoundError is propagated
 
         if srcstat == dststat:
-           return
+            return
 
         dir_dst = os.path.dirname(dst)
         if dir_dst == '': dir_dst = '.'
-        _, tmpdir = _mktemp_at(dir=dir_dst, dir_fd=dst_dir_fd, mkdir=True)
-        tmpname = tmpdir + "/" + ".rename.from"
         tmp_dir_fd = dst_dir_fd
 
         try:
-             return _rename_exchange_txf_win32(src, dst, tmpname)
+            return _rename_exchange_txf_win32(src, dst, dir_dst)
         except _NoTransactionSupported:
-             pass
-        finally:
-             os.rmdir(tmpdir)
-
-        # no transaction fs support. os.link() may also be unsupported, use rename.
-        if use_native_only >= 1:
-            _fail_on_nativeonly("RENAME_NOREPLACE")
-        return _rename_exchange_emulate_by_rename(src, dst, dir_dst=dir_dst)
+            # no transaction fs support. os.link() may also be unsupported, use rename.
+            if use_native_only >= 1:
+                _fail_on_nativeonly("RENAME_NOREPLACE")
+            return _rename_exchange_emulate_by_rename(src, dst, dir_dst=dir_dst)
 
     def _convert_flags_win32(flags):
         if flags == 0:
