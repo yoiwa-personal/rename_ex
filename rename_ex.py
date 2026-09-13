@@ -266,14 +266,14 @@ elif sys.platform == "win32":
                     raise _TransactionAborted
                 raise ctypes.WinError(err)
 
-            tmpdir = false
+            tmpdir = False
             try:
                 _, tmpdir = _mktemp_at(dir=dstdir, dir_fd=None, func=__mkdir)
             except _TransactionAborted:
                 continue
             # except _TransactionAborted: propagate to parent
             finally:
-                if tmpdir == false:
+                if tmpdir == False:
                     _kernel32.CloseHandle(h_transaction)
 
             tmp = tmpdir + "/" + ".rename.from"
