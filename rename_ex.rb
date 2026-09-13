@@ -18,9 +18,9 @@
 # limitations under the License.
 
 require 'tempfile'
+require 'securerandom'
 require 'fiddle'
 require 'fiddle/import'
-require 'forwardable'
 
 module RenameEx
   RENAME_NOREPLACE = 1
@@ -165,6 +165,8 @@ module RenameEx
       extern 'void* CreateTransaction(void*, void*, unsigned long, unsigned long, unsigned long, unsigned long, void*)'
       extern 'unsigned long MoveFileTransactedW(void*, void*, void*, void*, unsigned long, void*)'
       extern 'unsigned long CloseHandle(void*)'
+      extern 'unsigned long CreateDirectoryTransactedW(void*, void*, void*, unsigned long)'
+      extern 'unsigned long RemoveDirectoryTransactedW(void*, unsigned long)'
 
       ERRMAP = { # from win32.c, only really-core errors
         2 => Errno::ENOENT::Errno, # ERROR_FILE_NOT_FOUND
@@ -178,6 +180,7 @@ module RenameEx
         64 => Errno::ENOENT::Errno, # ERROR_NETNAME_DELETED
         67 => Errno::ENOENT::Errno, # ERROR_BAD_NET_NAME
         80 => Errno::EEXIST::Errno, # ERROR_FILE_EXISTS
+        183 => Errno::EEXIST::Errno, # ERROR_ALREADY_EXISTS
       }
       begin
         KNOWNERRORMAX = Errno.constants.map {|x| Errno.const_get(x).const_get(:Errno)}.filter{|x| x < 1000}.max
@@ -215,27 +218,60 @@ module RenameEx
     end
 
     class NoTransactionSupported_ < StandardError; end
+    class TransactionAborted_ < StandardError; end
 
-    def self._rename_exchange_txf_win32(from, to, tmp)
+    def self._rename_exchange_txf_win32(from, to, to_dir)
       err = nil
       fromw = self._to_wstr(from)
       tow = self._to_wstr(to)
-      tmpw = self._to_wstr(tmp)
 
       20.times {
         h_transaction = WIN32KERNEL_.CreateTransaction(nil, nil, 0, 0, 0, 0, nil)
         if h_transaction.null? || h_transaction.to_i == -1
           err = Fiddle::win32_last_error
           if err == 6706 # ERROR_TM_INITIALIZATION_FAILED:
-            raise _NoTransactionSupported_
+            raise NoTransactionSupported_
           end
  	  raise WIN32KERNEL_::winsyserror(err, old, new, "CreateTransaction")
         end
 
+        tmpdir = nil
         begin
-          if WIN32KERNEL_.MoveFileTransactedW(fromw, tmpw, nil, nil, 0, h_transaction)
-            if WIN32KERNEL_.MoveFileTransactedW(tow, fromw, nil, nil, 0, h_transaction)
-              if WIN32KERNEL_.MoveFileTransactedW(tmpw, tow, nil, nil, 0, h_transaction)
+          20.times {
+            t = to_dir + "/..rename." + SecureRandom.alphanumeric(8)
+
+            if WIN32KERNEL_.CreateDirectoryTransactedW(nil, self._to_wstr(t), nil, h_transaction) != 0
+              tmpdir = t
+              break
+            end
+            err = Fiddle::win32_last_error
+            if err == 183
+              continue
+            elsif [2005, 6832].include?(err)
+              raise RenameEx::NoTransactionSupported_
+            elsif [6800, 6706, 6718].include?(err)
+              raise RenameEx::TransactionAborted_
+            else
+              raise WIN32KERNEL_::winsyserror(err, t, to, "_rename_exchange_txf_win32: can't make temporary directory")
+            end
+          }
+        rescue TransactionAborted_
+          next
+        ensure
+          WIN32KERNEL_.CloseHandle(h_transaction) unless tmpdir
+        end
+
+	tmp = tmpdir + "/" + ".rename.from"
+        tmpw = self._to_wstr(tmp)
+
+        begin
+	  if WIN32KERNEL_.MoveFileTransactedW(fromw, tmpw, nil, nil, 0, h_transaction) != 0
+            if WIN32KERNEL_.MoveFileTransactedW(tow, fromw, nil, nil, 0, h_transaction) != 0
+              if WIN32KERNEL_.MoveFileTransactedW(tmpw, tow, nil, nil, 0, h_transaction) != 0
+                if WIN32KERNEL_.RemoveDirectoryTransactedW(self._to_wstr(tmpdir), h_transaction) == 0
+                  err = Fiddle::win32_last_error
+                  warn "rename_exchange: cleaning tmpdir failed (err): #{tmpdir}"
+                end
                 if WIN32KERNEL_.CommitTransaction(h_transaction)
                   return true
                 end
@@ -256,7 +292,7 @@ module RenameEx
           WIN32KERNEL_.CloseHandle(h_transaction)
         end
       }
-      raise WIN32KERNEL_::winsyserror(err, old, new, "_rename_exchange_txf_win32")
+      raise WIN32KERNEL_::winsyserror(err, from, to, "_rename_exchange_txf_win32")
     end
 
     def self._rename_exchange_win32(from, to, from_dir_fd: nil, to_dir_fd: nil)
@@ -268,20 +304,15 @@ module RenameEx
       return if fromstat.dev == tostat.dev && fromstat.ino == tostat.ino
 
       basedir = File.dirname(File.absolute_path(to))
-      tmpdir = Dir.mktmpdir("..rename.", tmpdir: basedir)
-      tmpname = tmpdir + "/" + ".rename.from"
-
       begin
-        return self._rename_exchange_txf_win32(from, to, tmpname)
+        return self._rename_exchange_txf_win32(from, to, basedir)
       rescue NoTransactionSupported_
         # other exceptions are transferred
-      ensure
-        Dir.rmdir(tmpdir)
+        if @@use_native_only >= 1
+          raise ArgumentError("renameat2(RENAME_EXCHANGE) is not available (TxF not supported on this os/location)")
+        end
+        return self._rename_exchange_emulate_by_rename(from, to, dir_to:basedir, fromstat:fromstat, tostat:tostat)
       end
-      if @@use_native_only >= 1
-        raise ArgumentError("renameat2(RENAME_EXCHANGE) is not available (TxF not supported on this os/location)")
-      end
-      return self._rename_exchange_emulate_by_rename(from, to, dir_to:basedir, fromstat:fromstat, tostat:tostat)
     end
 
     def self._convert_flags_win32(flags)
@@ -304,7 +335,7 @@ module RenameEx
 
       fromstat = nil
       tostat = nil
-      if use_native_only <= 1
+      if @@use_native_only <= 1
         begin
           fromstat = File.lstat(from)
           tostat = File.lstat(to)
@@ -344,7 +375,6 @@ module RenameEx
     end
 
     fname = nil
-    require 'securerandom'
     20.times {
       token = SecureRandom.alphanumeric(8)
       begin
