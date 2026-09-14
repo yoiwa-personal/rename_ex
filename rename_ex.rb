@@ -213,7 +213,7 @@ module RenameEx
       r = WIN32KERNEL_.MoveFileExW(self._to_wstr(old), self._to_wstr(new), flags.to_i)
       if r == 0
         err = Fiddle::win32_last_error
- 	raise WIN32KERNEL_::winsyserror(err, old, new, "MoveFileExW")
+        raise WIN32KERNEL_::winsyserror(err, old, new, "MoveFileExW")
       end
     end
 
@@ -232,7 +232,7 @@ module RenameEx
           if err == 6706 # ERROR_TM_INITIALIZATION_FAILED:
             raise NoTransactionSupported_
           end
- 	  raise WIN32KERNEL_::winsyserror(err, old, new, "CreateTransaction")
+          raise WIN32KERNEL_::winsyserror(err, old, new, "CreateTransaction")
         end
 
         tmpdir = nil

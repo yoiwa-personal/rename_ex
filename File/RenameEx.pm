@@ -226,10 +226,10 @@ BEGIN {
 
             require Win32API::File;
 
-	    sub _renameat2_win32 ($$$) {
-		my ($from, $to, $flags) = @_;
-		_parse_arg($from, undef);
-		_parse_arg($to, undef);
+            sub _renameat2_win32 ($$$) {
+                my ($from, $to, $flags) = @_;
+                _parse_arg($from, undef);
+                _parse_arg($to, undef);
 
                 my $fromstat = _statstr($from);
                 my $tostat = _statstr($to);
@@ -239,8 +239,8 @@ BEGIN {
                     elsif ($flags == 1) {$! = EEXIST; return 0; }
                     elsif ($flags == 2) {return 1;}
                 }
-		my $winflags;
-		if ($flags == 0) {
+                my $winflags;
+                if ($flags == 0) {
 		    $winflags = Win32API::File::MOVEFILE_REPLACE_EXISTING();
 		} elsif ($flags == RENAME_NOREPLACE) {
 		    $winflags = 0;
