@@ -5,7 +5,18 @@ use FindBin;
 use lib "$FindBin::Bin/..";
 use File::RenameEx;
 
-sub do_renameat2 ($$$);
+sub called_renameat2 ($$$);
+
+sub do_renameat2 ($$$) {
+  print ("renameat2(\"\Q$_[0]\E\", \"\Q$_[1]\E\", \Q$_[2]\E) => ");
+  my $r = &called_renameat2;
+  if ($r) {
+    print "OK\n";
+  } else {
+    print "ERR $! ($^E)\n";
+  }
+  return $r;
+}
 
 sub write_file ($$) {
     open (my $fh, ">", $_[0]) or die;
@@ -182,10 +193,10 @@ if ($0 eq __FILE__) {
     $_ = $ARGV[0];
     printf "====\n%s\nrunning Perl test %s\n\n", scalar File::RenameEx::_supported(), $_;
     if ($_ eq 'native') {
-	*do_renameat2 = \&renameat2;
+	*called_renameat2 = \&renameat2;
 	run_test();
     } elsif ($_ eq 'generic') {
-	*do_renameat2 = \&File::RenameEx::_renameat2_generic;
+	*called_renameat2 = \&File::RenameEx::_renameat2_generic;
 	run_test();
     } else {
 	die "unknown test";

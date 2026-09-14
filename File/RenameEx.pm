@@ -15,7 +15,7 @@ use constant RENAME_EXCHANGE => 2;
 
 use File::Basename qw(dirname);
 use File::Temp qw(tempfile tempdir);
-use Errno qw(EACCES ENOENT EEXIST);
+use Errno qw(EACCES ENOENT EEXIST EBUSY);
 use Scalar::Util ();
 
 our $rename_noreplace_supported;
@@ -57,7 +57,7 @@ BEGIN {
 	    require POSIX;
 	    my $SYS_renameat2 = &SYS_renameat2(); # check for existence
 	    # my $RENAME_NOREPLACE = 1; # linux specific value
-	    # my $RENAME_EXCHANGE = 2;  # linux specific value
+	    # my $RENAME_EXCHANGE = 2;	# linux specific value
 	    my $AT_FDCWD = -100; # linux specific value
 
 	    sub _renameat2_linux ($$$) {
@@ -75,8 +75,156 @@ BEGIN {
 	};
 	warn "linux setup failed: $@" if $@;
     } elsif ($^O eq 'MSWin32') {
-        eval {
-	    require Win32API::File;
+	eval {
+	    package File::RenameEx::Win32ext {
+		require Win32::API;
+
+		our $CloseHandle = Win32::API::More->new
+		  ('kernel32.dll', 'BOOL CloseHandle(HANDLE hObject)');
+		our $MoveFileTransactedA = Win32::API::More->new
+		  ( 'kernel32.dll',
+		    'BOOL MoveFileTransactedA(LPCSTR lpExistingFileName,
+                     LPCSTR lpNewFileName, PVOID lpProgressRoutine,
+                     PVOID lpData, DWORD dwFlags, HANDLE hTransaction)');
+		our $RemoveDirectoryTransactedA = Win32::API::More->new
+		  ( 'kernel32.dll',
+		    'BOOL RemoveDirectoryTransactedA(LPCSTR lpPathName, HANDLE hTransaction)');
+		our $CreateDirectoryTransactedA = Win32::API::More->new
+		  ( 'kernel32.dll',
+		    'BOOL CreateDirectoryTransactedA(LPCSTR lpTemplateDirectory,
+                     LPCSTR lpNewDirectory, PVOID lpSecurityAttributes, HANDLE hTransaction)');
+		our $CreateTransaction = Win32::API::More->new
+		  ( 'ktmw32.dll',
+		    'HANDLE CreateTransaction(PVOID lpTransactionAttributes,
+                     PVOID UOMS, DWORD CreateOptions, DWORD IsolationLevel,
+                     DWORD IsolationFlags, DWORD Timeout, LPWSTR Description)');
+		our $CommitTransaction = Win32::API::More->new
+		  ( 'ktmw32.dll', 'BOOL CommitTransaction(HANDLE hTransaction)');
+		our $RollbackTransaction = Win32::API::More->new
+		  ('ktmw32.dll', 'BOOL RollbackTransaction(HANDLE hTransaction)');
+
+		my %err_notransaction = map { $_ => 1 } (2005, 6832);
+		my %err_transactionabort = map { $_ => 1 } (6800, 6706, 6718);
+
+		our %err_map =
+		  ( # from Ruby's win32.c, only really-core errors
+		   2 => Errno::ENOENT, # ERROR_FILE_NOT_FOUND
+		   3 => Errno::ENOENT, # ERROR_PATH_NOT_FOUND
+		   5 => Errno::EACCES, # ERROR_ACCESS_DENIED
+		   15 => Errno::ENOENT, # ERROR_INVALID_DRIVE
+		   16 => Errno::EACCES, # ERROR_CURRENT_DIRECTORY
+		   17 => Errno::EXDEV, # ERROR_NOT_SAME_DEVICE
+		   53 => Errno::ENOENT, # ERROR_BAD_NETPATH
+		   55 => Errno::ENOENT, # ERROR_DEV_NOT_EXIST
+		   64 => Errno::ENOENT, # ERROR_NETNAME_DELETED
+		   67 => Errno::ENOENT, # ERROR_BAD_NET_NAME
+		   80 => Errno::EEXIST, # ERROR_FILE_EXISTS
+		   183 => Errno::EEXIST, # ERROR_ALREADY_EXISTS
+		  );
+
+		sub _translate_error (;$) {
+		    my $winerror = ($_[0] // ($^E + 0));
+		    $^E = $winerror;
+		    my $unixerror = $winerror ? ($err_map{$winerror} or Errno::EINVAL) : 0;
+		    $! = $unixerror;
+		    return $unixerror;
+		}
+
+		{
+		    no warnings 'portable';
+		    use constant INVALID_HANDLE_VALUE => ((length(pack('P', 0)) == 8) ? hex('ffffffffffffffff') : 0xffffffff);
+		}
+
+		sub _rename_exchange_txf_win32 ($$$) {
+		    my ($from, $to, $to_dir) = @_;
+
+		    for (my $i = 0; $i < 20; $i++) {
+			my $h_transaction = $CreateTransaction->Call(undef, undef, 0, 0, 0, 0, undef);
+			if ($h_transaction == INVALID_HANDLE_VALUE) {
+			    my $err = $^E + 0;
+			    if ($err == 6706) {
+				die "_notransaction\n";
+			    } else {
+				_translate_error($err);
+				return 0;
+			    }
+			}
+
+			my $tmpdir = sprintf("%s/..rename.%04x.%04x.%04x", $to_dir, rand(65536), rand(65536), rand(65536));
+			# not cheap (and not strictly required) to use securerandom in Perl, rand is 48 bits
+
+			if (! $CreateDirectoryTransactedA->Call(undef, $tmpdir, undef, $h_transaction)) {
+			    my $err = $^E + 0;
+			    $CloseHandle->Call($h_transaction) or Carp::carp "_rename_exchange_txf_win32: internal CloH_0: $^E";
+			    if ($err == 183) {
+				next;
+			    } elsif ($err_notransaction{$err}) {
+				$^E = 0;
+				die "_notransaction\n";
+			    } elsif ($err_transactionabort{$err}) {
+				next;
+			    } else {
+				_translate_error($err);
+				return 0;
+			    }
+			}
+			my $tmpname = $tmpdir . "/" . "..rename.from";
+
+			if ($MoveFileTransactedA->Call($from, $tmpname, undef, undef, 0, $h_transaction) and
+			    $MoveFileTransactedA->Call($to, $from, undef, undef, 0, $h_transaction) and
+			    $MoveFileTransactedA->Call($tmpname, $to, undef, undef, 0, $h_transaction)) {
+			    # succeed!
+			    $RemoveDirectoryTransactedA->Call($tmpdir, $h_transaction) or Carp::carp "_rename_exchange_txf_win32: internal RDTA: $^E";
+			    $CommitTransaction->Call($h_transaction) or Carp::carp "_rename_exchange_txf_win32: internal ComT: $^E";
+			    $CloseHandle->Call($h_transaction) or Carp::carp "_rename_exchange_txf_win32: internal CloH_1: $^E";
+			    $^E = 0;
+			    return 1;
+			} else {
+			    my $err = $^E + 0;
+			    if ($err_notransaction{$err}) {
+				$RollbackTransaction->Call($h_transaction) or Carp::carp "_rename_exchange_txf_win32: internal RbT_2: $^E";
+				$CloseHandle->Call($h_transaction) or Carp::carp "_rename_exchange_txf_win32: internal CloH_2: $^E";
+				$^E = 0;
+				die "_notransaction\n";
+			    } elsif ($err_transactionabort{$err}) {
+				$CloseHandle->Call($h_transaction) or Carp::carp "_rename_exchange_txf_win32: internal CloH_3: $^E";
+				next;
+			    } else {
+				$RollbackTransaction->Call($h_transaction) or Carp::carp "_rename_exchange_txf_win32: internal RbT_4: $^E";
+				$CloseHandle->Call($h_transaction) or Carp::carp "_rename_exchange_txf_win32: internal CloH_4: $^E";
+				_translate_error($err);
+				return 0;
+			    }
+			}
+		    }
+		    $^E = 170; # ERROR_BUSY
+		    $! = Errno::EBUSY;
+		    return 0;
+		}
+	    }
+
+            sub _rename_exchange_win32 ($$) {
+		my ($from, $to) = @_;
+		my $fromstat = _statstr($from);
+		my $tostat = _statstr($to);
+		if (defined $fromstat && defined $tostat && $fromstat eq $tostat) {
+		    return 1;
+		}
+		local $@;
+		my $dir = dirname($to);
+		my $r;
+		eval {
+		    $r = File::RenameEx::Win32ext::_rename_exchange_txf_win32($from, $to, $dir);
+		};
+		if ($@ eq "_notransaction\n") {
+		    return _rename_exchange_generic_by_rename($from, $to);
+		} elsif ($@) {
+		    die $@;
+		}
+		return $r;
+	    }
+
+            require Win32API::File;
 
 	    sub _renameat2_win32 ($$$) {
 		my ($from, $to, $flags) = @_;
@@ -91,20 +239,30 @@ BEGIN {
                     elsif ($flags == 1) {$! = EEXIST; return 0; }
                     elsif ($flags == 2) {return 1;}
                 }
-		my $winflags = Win32API::File::MOVEFILE_REPLACE_EXISTING();
+		my $winflags;
 		if ($flags == 0) {
+		    $winflags = Win32API::File::MOVEFILE_REPLACE_EXISTING();
 		} elsif ($flags == RENAME_NOREPLACE) {
 		    $winflags = 0;
 		} elsif ($flags == RENAME_EXCHANGE) {
-		    return _rename_exchange_generic_by_rename($from, $to);
-                    # In Perl, use of rename_exchange_generic is a bit tough,
-		    # due to the semantics of rename function.
+                    return _rename_exchange_win32($from, $to);
+		} else {
+		    $! = Errno::EINVAL;
+		    return 0;
 		}
-		return Win32API::File::MoveFileEx($from, $to, $winflags);
+		if (Win32API::File::MoveFileEx($from, $to, $winflags)) {
+		    $! = 0; $^E = 0;
+		    return 1;
+		} else {
+		    File::RenameEx::Win32ext::_translate_error($^E + 0);
+		    return 0;
+		}
 	    }
+	    *renameat2 = \&_renameat2_win32;
+	    $rename_noreplace_supported = "Win32API::File";
+	    $rename_exchange_supported = "Win32API::TxF";
 	};
-	*renameat2 = \&_renameat2_win32;
-	$rename_noreplace_supported = "Win32API::File";
+      	warn "win32 setup failed: $@" if $@;
     }
     # TODO: BSD/MacOS (renameatx_np): needs FFI external module
 }
@@ -147,7 +305,7 @@ sub _rename_exchange_generic_by_rename($$) {
     
     my $tmpdir = tempdir("rename.XXXXXX", DIR => $dir, CLEANUP => 0);
     die unless defined $tmpdir;
-    $tmpname = $tmpdir + "/..rename.from";
+    $tmpname = $tmpdir . "/..rename.from";
 
     # first move "from": EXDEV detected here
     unless (rename $from, $tmpname) {
@@ -292,19 +450,19 @@ sub _rename_exchange_generic($$) {
     }
     ...;
 }
-    
+
 *renameat2 = \&_renameat2_generic unless defined $rename_noreplace_supported;
 
 sub rename_noreplace ($$) {
-    goto &renameat2($_[0], $_[1], RENAME_NOREPLACE);
+    return renameat2($_[0], $_[1], RENAME_NOREPLACE);
 }
 
 sub rename_exchange ($$) {
-    goto &renameat2($_[0], $_[1], RENAME_EXCHANGE);
+    return renameat2($_[0], $_[1], RENAME_EXCHANGE);
 }
 
 sub renameat ($$) {
-    goto &renameat2($_[0], $_[1], 0);
+    return renameat2($_[0], $_[1], 0);
 }    
 
 sub _supported {
