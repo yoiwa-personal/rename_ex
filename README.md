@@ -1,197 +1,234 @@
 # Rename_Ex: Python/Ruby/Perl library for a richer rename primitive in Linux
 
-This library provides an interface to extended OS ability to rename
-files etc. in a bit clever ways:
+This library provides an interface to extended OS capabilities for renaming
+files in smarter ways:
 
-- Rename a file avoiding overwriting existing destination files
+- Rename a file while avoiding overwriting existing destination files
 - Exchange two files' names
 - Specify directory handles (dirfd) for filenames' origins
 
-Currently, this library supports following environments:
+Currently, this library supports the following environments:
  - Linux:
-   - fully supported in Python, Ruby and Perl.
-   - fairly-recent (after June 2014) Linux needed.
- - MacOS Darwin:
-   - supported in Python and Ruby.
-   - emulation only on Perl.
+   - Fully supported in Python, Ruby, and Perl.
+   - Requires a fairly recent Linux kernel (June 2014 or later).
+ - macOS (Darwin):
+   - Supported in Python and Ruby.
+   - Emulation only in Perl.
  - Windows:
-   - supported on Python and Ruby, Perl with NTFS.
-   - some limitation exists.
+   - Supported in Python and Ruby; supported in Perl with NTFS.
+   - Some limitations exist.
 
-It also provides limited emulation routines for other POSIX compliant environments.
+It also provides limited emulation routines for other POSIX-compliant environments.
 
-# provided APIs
+# Provided APIs
 
-The main API of the library is named "renameat2", given after the name of the Linux-specific system call.
+The main API of the library is named `renameat2`, after the Linux-specific system call.
 
  - Python: `renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0)`
  - Ruby: `renameat2(from, to, *, from_dir_fd=nil, to_dir_fd=nil, flags=0)`
 
-The API details in Perl will be described later.
+The Perl API details are described below.
 
-First two arguments are the name of a file to be renamed, and its target name.
+The first two arguments are the name of the file to be renamed and its target name.
 
 If `src_dir_fd` (`from_dir_fd`) contains an open directory handle (`os.open` in Python, `Dir` in Ruby), 
 the pathname `src` or `from` will be evaluated relative to the given directory.
-By default, it will be relative to the current directory.
-The same applies for `dst` or `to` parameters as well.
+By default, it is relative to the current directory.
+The same applies to the `dst` or `to` parameters.
 
-The flags can be 0 for replacing the destination (if exist) with the
-source, or one of the constant below:
+The `flags` argument can be `0` for replacing the destination (if it exists) with the
+source, or one of the constants below:
 
- - RENAME_NOREPLACE (1): if the target file exists, the rename will be aborted with EEXIST error.
- - RENAME_EXCHANGE (2): it will exchange the names of two file.
+ - `RENAME_NOREPLACE` (1): If the target file exists, the rename operation will abort with an `EEXIST` error.
+ - `RENAME_EXCHANGE` (2): Atomically exchanges the names of two files.
 
-If any error has been occurred, an appropriate exceptions are raised (except in Perl).
+If an error occurs, an appropriate exception is raised (except in Perl).
 
-All of those actions are atomic, except that there might be a small time window that
-the same file will be visible in both names.
+All of these actions are atomic, except that there might be a small window of time during which
+the file is visible under both names.
 
 ## Convenience APIs
 
-There are also three convenience routines exist:
- - `renameat2`: the same functionality without the `flags` argument, replacing the destination.
- - `rename_noreplace`: renames a file without overwriting the destination.
- - `rename_exchange`: renames two files, exchanging these names.
-The arguments are as same as `renameat2`, except the last `flags` argument.
+Three convenience routines are also provided:
+ - `renameat2`: The same functionality without the `flags` argument, replacing the destination.
+ - `rename_noreplace`: Renames a file without overwriting the destination.
+ - `rename_exchange`: Renames two files, exchanging their names.
+
+The arguments are the same as `renameat2`, except for the missing `flags` argument.
 
 # Emulations
 
-If the running environment is not supported, the library will fallback to some limited emulations.
+If the running environment is not natively supported, the library will fall back to limited emulation.
 
- - Parameters for dir_fd are not supported in some emulated cases.
- - Atomicity is generally lost: there will be a small time window that gives inconsistent results.
-   The details of limitation is implementation-specific and subject to change, but do not except even
-   that some files are existing on the destination name during the operation. (Impossible for exchange-renaming two non-empty directories.)
- - The emulation is strongly depending on POSIX corner-case behavior, and will not work on non-POSIX underlying OSs.
+ - Parameters for `dir_fd` are not supported in some emulated cases.
+ - Atomicity is generally lost: there will be a small window of time that produces inconsistent results.
+   The specific limitations depend on the implementation and are subject to change,
+   but do not expect destination files to remain intact during exchange operations.
+   (For example, exchange-renaming two non-empty directories is impossible under emulation.)
+ - Emulation relies heavily on POSIX corner-case behavior and will not work on non-POSIX underlying OSs.
 
-## Emulation control APIs
+## Emulation Control APIs
 
- - set_use_native_only(level) will change behavior of above functions
-   when native system calls etc. are not available.
+ - `set_use_native_only(level)` will change the behavior of the above functions
+   when native system calls are unavailable.
 
-   - level = False or 0 (default): the module will emulate the
-     behavior as much as possible, using the available language
-     features.  In many cases, doing it will loss atomicity
-     requirements.
+   - `level = False` or `0` (default): The module will emulate the
+     behavior as much as possible using available language
+     features. In many cases, doing so will lose atomicity.
 	 
-	 See section "Emulations" below for further details.
+	 See the section "Emulations" below for further details.
 
-   - level = True or 1: the functions will fail, if the core behavior
-     of the function (e.g. continuity of destination existence) will
-     be lost.  These functions will still perform several pre-flight
-     checks before calling the native calls to make a consistent
-     behavior.  It will however a small window of TOC-TOW race
-     conditions in extreme cases.
+   - `level = True` or `1`: The functions will fail if the core behavior
+     of the function (e.g., continuity of destination existence) would be lost.
+     These functions will still perform several pre-flight checks before calling
+     the native functions to maintain consistent behavior. It will, however, leave
+     a small window of TOCTOU race conditions in extreme cases.
 
-   - level = 2: the functions will skip any pre-flight check and call
-     the native functions as fast as possible.  It will provide the
-     most strict sense of atomic behavior, but it may reveal some
-     inconsistency with POSIX-like semantics, or expose some "weird"
-     behavior of underlying operating systems.
+   - `level = 2`: The functions will skip any pre-flight checks and call
+     the native functions as fast as possible. This provides the
+     strictest sense of atomic behavior, but it may reveal some
+     inconsistencies with POSIX-like semantics or expose "weird"
+     behavior of the underlying operating system.
 
-# Language-dependent behaviors
+## Emulation Details
+
+The following implementation details are subject to change in the future and may be outdated:
+
+ - Replacing rename (`flags=0`):
+   
+   When the OS's default rename function is non-replacing, the emulation
+   will remove the destination file just before renaming.
+
+   There will be a window of time during which the destination does not exist, 
+   and under race conditions, the rename might fail.
+   
+ - Non-replacing rename (`flags=1`):
+ 
+   When the OS's default rename function is replacing, the emulation
+   will first check for the existence of the destination file, and if
+   it exists, report an emulated OS error.
+   
+   Under race conditions, a file may be accidentally overwritten.
+
+ - Exchanging rename (`flags=2`):
+ 
+   If the OS is Unix-like, supports hard links and replacing rename,
+   and both targets are non-directory files, the emulation will create a
+   temporary directory, make two hard links for the source and destination,
+   and then overwrite the original locations using replacing renames.
+   There will be no window of time with unoccupied locations, but
+   accidental overwriting might occur under race conditions.
+
+   If any of the above conditions are not met, the emulation will
+   simply exchange the source and destination using a temporary name.
+   There will be a small window of time where neither original location is
+   occupied by a file.
+   
+   Checking the above conditions might also cause a TOCTOU race
+   condition. If this occurs, the emulation might throw
+   unexpected errors or get stuck in an unrecoverable state. In some
+   cases, temporary directories may remain after such an error.
+
+# Language-Dependent Behaviors
 
 ## Python
 
-In Python, the name of the module and for imports are both "`rename_ex`".
+In Python, the module name and import target are both "`rename_ex`".
 
-The statement `from rename_ex import *` will import the above four
-functions starting with `rename`, and two constants for the flags.
+The statement `from rename_ex import *` will import the four
+functions starting with `rename`, along with two constants for the flags.
 
-The functions will report errors by raising an appropriate exception.
+Functions report errors by raising appropriate exceptions.
 
-Values for dir_fd parameters are low-level OS handles in integer, opened with 
-`os.open(..., O_RDONLY | O_DIRECTORY)`.  `None` can be used for the current directory.
+Values for `dir_fd` parameters are low-level OS handles represented as integers, opened with 
+`os.open(..., O_RDONLY | O_DIRECTORY)`. `None` can be used for the current directory.
 
-The dir_fd parameters are fully supported, even with emulations, given
+The `dir_fd` parameters are fully supported even with emulation, provided
 the underlying OS supports it.
 
 ## Ruby
 
-In Ruby, the library can be required in name `rename_ex`, and available as module `RenameEx`.
-Use `import` and `extend` to use the functions and constants without module names.
+In Ruby, the library can be required using `rename_ex`, and is available as the module `RenameEx`.
+Use `import` and `extend` to use the functions and constants without specifying module names.
 
-Named parameters are different from Python's, reflecting the names given in original `File.rename` methods.
+Named parameters differ from Python's to reflect the parameter names in the standard `File.rename` method.
 
-The functions will report errors by raising an appropriate exception.
+Functions report errors by raising appropriate exceptions.
 
-The dir_fd parameters are only available for native functions, not
-with emulations.  The dir_fd parameters takes either an integer or a
-`Dir` object. For the current directory, `nil` is used.
+The `dir_fd` parameters are only available for native functions, not under emulation.
+`dir_fd` parameters accept either an integer or a `Dir` object. For the current directory, `nil` is used.
 
 ## Perl
 
 The package is named `File::RenameEx`.
 
-Due to different syntax natures of Perl function interfaces, the dirfd
-parameters are passed in an different way.  The Perl API is like
-below:
+Due to syntax differences in Perl function interfaces, `dirfd`
+parameters are passed differently. The Perl API is as follows:
 
   - `renameat2(srcfile, dstfile, flags)`
   - `renameat2([srcfd, srcname], [dstfd, dstname], flags)`
 
-When an array reference is given in the position of the file name, it will be treated as
-a pair of dirfd and a name relative to that directory.
-The parameter `srcfd` and `dstfd` can be either an integer or an reference/glob to opened DIRHANDLE by `opendir`.
+When an array reference is passed in place of a file name, it is treated as
+a pair consisting of a `dirfd` and a name relative to that directory.
+The `srcfd` and `dstfd` parameters can be either an integer or a reference/glob to an opened `DIRHANDLE` (via `opendir`).
 The current directory is denoted by `undef` in the second syntax.
-Both types of arguments can be mixed in a single call.
+Both argument types can be mixed in a single call.
 
-The dir_fd parameters are only available for Linux.
+The `dir_fd` parameters are only available on Linux.
 
-The functions return a truth value on successful execution, and a
-false value in failure.  The OS error is stored in `$!`.
+The functions return a truthy value on successful execution and a
+false value on failure. The OS error is stored in `$!`.
 
-Darwin support is via emulation only; native support requires external
-libraries not included in core distribution.
+macOS (Darwin) support is via emulation only; native support requires external
+libraries not included in the core distribution.
 
-set_use_native_only is not yet implemented in Perl.
+`set_use_native_only` is not yet implemented in Perl.
 
-# OS-dependent behavior
+# OS-Dependent Behavior
 
 ## Linux
 
-All functionalities and all languages are supported, including dir_fd parameters.
+All functionalities and languages are supported, including `dir_fd` parameters.
 
-The required system call, `renameat2`, was first implemented in June 2014.
+The required system call, `renameat2`, was introduced in June 2014.
 
-If there are two hard links for the same file, namely 1 and 2, and
-when `renameat("1", "2")` is called, the link 1 is not removed and the
-call still succeeds.  This is a defined POSIX behavior.
+If there are two hard links for the same file (e.g., `1` and `2`), and
+`renameat("1", "2")` is called, link `1` is not removed and the
+call succeeds. This is standard POSIX behavior.
 
-## MacOS (modern Darwin)
+## macOS (Modern Darwin)
 
-MacOS is supported natively on Python and Ruby, using `renameatx_np` system call.
+macOS is supported natively in Python and Ruby using the `renameatx_np` system call.
 
-It is not supported with Perl, due to unavailability of `syscall` function.
-Limited emulation will be provided.
+It is not natively supported in Perl due to the unavailability of the `syscall` function.
+Limited emulation is provided instead.
 
 ## Windows (Win32)
 
 In Python and Ruby, all three function flags are supported on NTFS.
-Support for dirfd is currently not available.
+Support for `dirfd` is currently unavailable.
 
 Note that Python provides `os.replace` and `os.rename` on this platform.
 
-For RENAME_EXCHANGE, the library uses transactional NTFS (TxF) kernel
-feature, which is still available in 2026 but being declared as
-deprecated.  Unfortunately, current Win32 APIs only provide direct
-APIs for replacing and replacing renames, not for exchanges.
-If it is called for other network file systems, or TxF support is
-terminated, the library will fallback to race-unsafe emulation
+For `RENAME_EXCHANGE`, the library uses the Transactional NTFS (TxF) kernel
+feature, which remains available in 2026 but has been declared
+deprecated. Unfortunately, current Win32 APIs only provide direct
+APIs for replacing and non-replacing renames, not for exchanges.
+If it is called on other network file systems, or if TxF support is
+discontinued, the library will fall back to race-unsafe emulation
 routines.
 
-Corner case behavior of Win32 API is quite different from POSIX
-systems.  Most cases are covered by pre-flight check, but it may have
-small time windows for TOCTOW type race conditions.
+The corner-case behavior of Win32 APIs is quite different from POSIX
+systems. Most cases are covered by pre-flight checks, but small time windows
+for TOCTOU race conditions may still exist.
 
-If there are two hard links for the same file, namely 1 and 2,
+If there are two hard links for the same file (e.g., `1` and `2`),
 and `rename_noreplace("1", "2")` is called with `set_use_native_only(2)`,
-2 is overwritten by 1, or in another phrasing, 1 is silently removed,
-regardless of NOREPLACE requests.
-This is the as-is NTFS semantics and not our bug.
+`2` is overwritten by `1` (or in other words, `1` is silently removed),
+regardless of the `NOREPLACE` request.
+This reflects native NTFS semantics and is not a library bug.
 
-# Author, Copyright and License
+# Author, Copyright, and License
 
 (c) 2026 Yutaka OIWA <yutaka@oiwa.jp>.
 
