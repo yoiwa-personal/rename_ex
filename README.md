@@ -25,7 +25,7 @@ It also provides limited emulation routines for other POSIX-compliant environmen
 The main API of the library is named `renameat2`, after the Linux-specific system call.
 
  - Python: `renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0)`
- - Ruby: `renameat2(from, to, *, from_dir_fd=nil, to_dir_fd=nil, flags=0)`
+ - Ruby: `renameat2(from, to, *, from_dir_fd: nil, to_dir_fd: nil, flags: 0)`
 
 The Perl API details are described below.
 
