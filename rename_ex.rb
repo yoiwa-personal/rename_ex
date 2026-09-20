@@ -168,40 +168,61 @@ module RenameEx
       extern 'unsigned long CreateDirectoryTransactedW(void*, void*, void*, unsigned long)'
       extern 'unsigned long RemoveDirectoryTransactedW(void*, unsigned long)'
 
-      ERRMAP = { # from win32.c, only really-core errors
-        2 => Errno::ENOENT::Errno, # ERROR_FILE_NOT_FOUND
-        3 => Errno::ENOENT::Errno, # ERROR_PATH_NOT_FOUND
-        5 => Errno::EACCES::Errno, # ERROR_ACCESS_DENIED
-        15 => Errno::ENOENT::Errno, # ERROR_INVALID_DRIVE
-        16 => Errno::EACCES::Errno, # ERROR_CURRENT_DIRECTORY
-        17 => Errno::EXDEV::Errno, # ERROR_NOT_SAME_DEVICE
-        53 => Errno::ENOENT::Errno, # ERROR_BAD_NETPATH
-        55 => Errno::ENOENT::Errno, # ERROR_DEV_NOT_EXIST
-        64 => Errno::ENOENT::Errno, # ERROR_NETNAME_DELETED
-        67 => Errno::ENOENT::Errno, # ERROR_BAD_NET_NAME
-        80 => Errno::EEXIST::Errno, # ERROR_FILE_EXISTS
-        183 => Errno::EEXIST::Errno, # ERROR_ALREADY_EXISTS
-      }
-      begin
-        KNOWNERRORMAX = Errno.constants.map {|x| Errno.const_get(x).const_get(:Errno)}.filter{|x| x < 1000}.max
-      rescue
-        KNOWNERRORMAX = 140
-      end
-      def map_fiddle_to_errno(x)
-        # Ruby design bug: result of GetLastError is to be given to SystemCallError,
-        # but smaller GetLastError numbers will get mapped to invalid errno.
-        if x < 0 || x > KNOWNERRORMAX
-          return x
-        else
-          return ERRMAP.fetch(x, Errno::EINVAL::Errno)
+      # https://github.com/yoiwa-personal/win32_err_map/
+      module Win32ErrMap
+        DOSERRMAP_H = {
+          232 => 32, # EPIPE *
+          267 => 20, # ENOTDIR *
+          1113 => 42, # EILSEQ
+          1816 => 12, # ENOMEM
+          10004 =>  4, # EINTR
+          10009 =>  9, # EBADF
+          10013 => 13, # EACCES
+          10014 => 14, # EFAULT
+          10022 => 22, # EINVAL
+          10024 => 24, # EMFILE
+        }
+        DOSERRMAP_S = ("222202022413091212120708222222021318021313131313131313131313" +
+                       "131313131313132222222222222222222222222222222202222222222222" +
+                       "222222222213220222222222222222222222222217221313222222222211" +
+                       "222222222222222222222222222222222222133222222822092222222222" +
+                       "222222222222222210100922132222222222222222222222224122222222" +
+                       "222222222222222213222202222211222213222222222222222222222222" +
+                       "222222172222222208080808080808080808080808080822222202222222" +
+                       "222222222211222222222222222222222222222222223222222222222222" +
+                       "222222222222222222222222222222222222222222222222222222202222" +
+                       "222222222222222222222222222222222222222222222222222222222222")
+        private_constant :DOSERRMAP_S, :DOSERRMAP_H
+
+        begin
+          KNOWNERRORMAX = Errno.constants.map {|x| Errno.const_get(x).const_get(:Errno)}.filter{|x| x < 1000}.max
+        rescue
+          KNOWNERRORMAX = 140
         end
+        def win32_err_map(en)
+          if DOSERRMAP_H.include?(en)
+            r = DOSERRMAP_H[en]
+          elsif 0 <= en and en <= 299
+            r = (DOSERRMAP_S.slice(en*2,2).to_i)
+          elsif 10000 <= en and en <= 11999
+            r = en
+          else
+            r = 22 # EINVAL
+          end
+          if en > KNOWNERRORMAX and r == 22
+            return en
+          else
+            return r
+          end
+        end
+        module_function :win32_err_map
       end
       def winsyserror(err, from, to, location)
         SystemCallError.new("(##{err}) - (#{from}, #{to})",
-                            WIN32KERNEL_::map_fiddle_to_errno(err),
+                            Win32ErrMap::win32_err_map(err),
                             location)
       end
-      module_function :map_fiddle_to_errno, :winsyserror
+      module_function :winsyserror
     end
     private_constant :WIN32KERNEL_
 

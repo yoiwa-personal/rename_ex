@@ -106,26 +106,48 @@ BEGIN {
 		my %err_notransaction = map { $_ => 1 } (2005, 6832);
 		my %err_transactionabort = map { $_ => 1 } (6800, 6706, 6718);
 
-		our %err_map =
-		  ( # from Ruby's win32.c, only really-core errors
-		   2 => Errno::ENOENT, # ERROR_FILE_NOT_FOUND
-		   3 => Errno::ENOENT, # ERROR_PATH_NOT_FOUND
-		   5 => Errno::EACCES, # ERROR_ACCESS_DENIED
-		   15 => Errno::ENOENT, # ERROR_INVALID_DRIVE
-		   16 => Errno::EACCES, # ERROR_CURRENT_DIRECTORY
-		   17 => Errno::EXDEV, # ERROR_NOT_SAME_DEVICE
-		   53 => Errno::ENOENT, # ERROR_BAD_NETPATH
-		   55 => Errno::ENOENT, # ERROR_DEV_NOT_EXIST
-		   64 => Errno::ENOENT, # ERROR_NETNAME_DELETED
-		   67 => Errno::ENOENT, # ERROR_BAD_NET_NAME
-		   80 => Errno::EEXIST, # ERROR_FILE_EXISTS
-		   183 => Errno::EEXIST, # ERROR_ALREADY_EXISTS
-		  );
+                # https://github.com/yoiwa-personal/win32_err_map/
+                package File::RenameEx::Win32ext::Win32ErrMap {
+                    my %__doserrmap = (
+                                       232 => 32, # EPIPE *
+                                       267 => 20, # ENOTDIR *
+                                       1113 => 42, # EILSEQ
+                                       1816 => 12, # ENOMEM
+                                       10004 =>  4, # EINTR
+                                       10009 =>  9, # EBADF
+                                       10013 => 13, # EACCES
+                                       10014 => 14, # EFAULT
+                                       10022 => 22, # EINVAL
+                                       10024 => 24, # EMFILE
+                                      );
+
+                    my $__doserrmap = ("222202022413091212120708222222021318021313131313131313131313" .
+                                       "131313131313132222222222222222222222222222222202222222222222" .
+                                       "222222222213220222222222222222222222222217221313222222222211" .
+                                       "222222222222222222222222222222222222133222222822092222222222" .
+                                       "222222222222222210100922132222222222222222222222224122222222" .
+                                       "222222222222222213222202222211222213222222222222222222222222" .
+                                       "222222172222222208080808080808080808080808080822222202222222" .
+                                       "222222222211222222222222222222222222222222223222222222222222" .
+                                       "222222222222222222222222222222222222222222222222222222202222" .
+                                       "222222222222222222222222222222222222222222222222222222222222");
+
+                    sub win32_err_map($) {
+                        my ($en) = @_;
+                        $en = $en + 0;
+                        return $__doserrmap{$en} if exists $__doserrmap{$en};
+                        if (0 <= $en and $en <= 299) {
+                            return 0 + substr($__doserrmap, $en*2, 2);
+                        }
+                        return $en if (10000 <= $en and $en <= 11999);
+                        return 22; # EINVAL
+                    }
+                }
 
 		sub _translate_error (;$) {
 		    my $winerror = ($_[0] // ($^E + 0));
 		    $^E = $winerror;
-		    my $unixerror = $winerror ? ($err_map{$winerror} or Errno::EINVAL) : 0;
+                    my $unixerror = $winerror ? File::RenameEx::Win32ext::Win32ErrMap::win32_err_map($winerror) : 0;
 		    $! = $unixerror;
 		    return $unixerror;
 		}
