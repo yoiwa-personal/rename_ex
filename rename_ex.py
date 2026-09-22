@@ -601,32 +601,16 @@ def _renameat2_generic(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
     else:
         _fail_on_unknownflags(flags)
 
-def _renameat2_choose():
-    if _env.exchange_native_supported and use_native:
-        return _renameat2
-    elif _env.native_supported and use_native:
-        return _renameat2_noswapsupport
-    else:
-        return _renameat2_generic
-
-# DynamicCallable: https://gist.github.com/yoiwa/fe6e01d7e436d9b3a99db127be0df859
-class DynamicCallable: # use as a decorator
+# start DynamicCallable snippets
+class DynamicCallable:
     """A swappable callable wrapper.
-
-    A callable whose underlying implementation can be dynamically updated at runtime.
-
-    First apply @DynamicCallable for initial implementation.
-    Then, @old_func._set_implementation for updated implementation.
-    Function application form is also possible.
-
-    This is particularly useful for exported module-level functions.
-    For instance/class methods, assign directly to attributes of __class__ .
+    See https://gist.github.com/yoiwa/fe6e01d7e436d9b3a99db127be0df859 for details.
     """
 
     def __new__(cls, func):
         class DynamicCallable(cls):
             # __call__ is always invoked from a class, not from an instance.
-            # We need a singleton class.
+            # We need a singleton class, like a wrapper to DynamicCallable.
             __name__ = cls.__name__
             __qualname__ = cls.__qualname__
             __doc__ = cls.__doc__
@@ -639,16 +623,21 @@ class DynamicCallable: # use as a decorator
 
             def _set_implementation(self, new_func, update_info=False):
                 self.__class__.__call__ = staticmethod(new_func)
-                if update_info:
-                    functools.update_wrapper(self, new_func, updated=[])
-                else:
-                    self.__wrapped__ = new_func
+                self.__wrapped__ = new_func
 
             def __repr__(self):
                 return f"<DynamicCallable: {self.__class__.__print_prefix}{self.__class__.__call__.__name__}>"
 
         return super().__new__(DynamicCallable)
 ## end DynamicCallable snippets
+
+def _renameat2_choose():
+    if _env.exchange_native_supported and use_native:
+        return _renameat2
+    elif _env.native_supported and use_native:
+        return _renameat2_noswapsupport
+    else:
+        return _renameat2_generic
 
 @DynamicCallable
 def renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
@@ -673,6 +662,14 @@ def set_use_native(x):
 set_use_native(bool(_env.native_supported))
 
 def set_use_native_only(x):
+    """Set whether, when native routines are unavailable, this module
+    to use emulation routines or raise an Exceptions.
+
+    Setting this to `2` means that any compatibility workarounds
+    around OS native routines are omitted, and OS dependent behaviors
+    are exposes.
+
+    """
     global use_native_only
     if isinstance(x, bool):
         x = int(x)
