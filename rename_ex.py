@@ -41,6 +41,7 @@ import tempfile
 import warnings
 import stat
 import errno
+import functools
 from pathlib import Path
 from collections import namedtuple
 from collections.abc import Sequence
@@ -608,8 +609,68 @@ def _renameat2_choose():
     else:
         return _renameat2_generic
 
-def _renameat2_switcher(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
+# DynamicCallable: https://gist.github.com/yoiwa/fe6e01d7e436d9b3a99db127be0df859
+class DynamicCallable: # use as a decorator
+    """A swappable callable wrapper.
+
+    A callable whose underlying implementation can be dynamically updated at runtime.
+
+    First apply @DynamicCallable for initial implementation.
+    Then, @old_func._set_implementation for updated implementation.
+    Function application form is also possible.
+
+    This is particularly useful for exported module-level functions.
+    For instance/class methods, assign directly to attributes of __class__ .
+    """
+
+    def __new__(cls, func):
+        class DynamicCallable(cls):
+            # __call__ is always invoked from a class, not from an instance.
+            # We need a singleton class.
+            __name__ = cls.__name__
+            __qualname__ = cls.__qualname__
+            __doc__ = cls.__doc__
+            __module__ = cls.__module__
+
+            def __init__(self, func):
+                self.__class__.__call__ = staticmethod(func)
+                functools.update_wrapper(self, func, updated=[])
+                self.__class__.__print_prefix = f"{self.__name__} := "
+
+            def _set_implementation(self, new_func, update_info=False):
+                self.__class__.__call__ = staticmethod(new_func)
+                if update_info:
+                    functools.update_wrapper(self, new_func, updated=[])
+                else:
+                    self.__wrapped__ = new_func
+
+            def __repr__(self):
+                return f"<DynamicCallable: {self.__class__.__print_prefix}{self.__class__.__call__.__name__}>"
+
+        return super().__new__(DynamicCallable)
+## end DynamicCallable snippets
+
+@DynamicCallable
+def renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
+    """renameat2 - rename, replace or exchange a file relative to directory file descriptors.
+
+    renameat2(src, dst, flags=0) will replace any existing target file.
+    renameat2(src, dst, flags=rename_ex.RENAME_NOREPLACE) will only rename to non-existing target.
+    renameat2(src, dst, flags=rename_ex.RENAME_EXCHANGE) will swap names of two files.
+    """
     _renameat2_choose()(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
+
+def set_use_native(x):
+    global use_native
+    global renameat2
+    if x not in (True, False):
+        raise ValueError
+    old = use_native
+    use_native = x
+    renameat2._set_implementation(_renameat2_choose())
+    return old
+
+set_use_native(bool(_env.native_supported))
 
 def set_use_native_only(x):
     global use_native_only
@@ -628,25 +689,8 @@ def allow_emulation(b):
         raise ValueError
     use_native_only(not b)
 
-def set_use_native(x):
-    global use_native
-    global renameat2
-    if x not in (True, False):
-        raise ValueError
-    old = use_native
-    use_native = x
-    if under_debug:
-        renameat2 = _renameat2_switcher
-    else:
-        if ((old is not None) and use_native != old):
-            raise ValueError("rename_at.set_use_native: only available under debugging")
-        renameat2 = _renameat2_choose()
-    return old
-
-set_use_native(bool(_env.native_supported))
-
 def support_status():
-    used_f = _renameat2_choose() if renameat2 is _renameat2_switcher else renameat2
+    used_f = renameat2.__wrapped__
     used_routine = ("native" if used_f is _renameat2
                     else "native/emulated swap" if used_f is _renameat2_noswapsupport
                     else "emulated" if used_f is _renameat2_generic
@@ -660,7 +704,7 @@ Exchange is supported natively:          {_env.exchange_native_supported}
 Dir_fd is supported:                     {_env.dirfd_supported}
 Current setting:                         {"native" if use_native else "generic emulation"}
 Enforce Native Routines:                 {use_native_only!r}
-Currently-used routine:                  {used_routine} ({renameat2!r})
+Currently-used routine:                  {used_routine} ({renameat2.__wrapped__!r})
 """,
         "use_native_only": use_native_only,
         "allow_emulation": use_native_only == 0,
@@ -670,8 +714,9 @@ Currently-used routine:                  {used_routine} ({renameat2!r})
 renameat = renameat2 # only optional "flags" is different
 
 def rename_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
-    """Rename a file in src."""
+    """Rename a file in src to dst.  Raise some OSError if dst already exists."""
     return renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=RENAME_NOREPLACE)
 
 def rename_exchange(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+    """Exchange names of files in src and dst.  Raise some OSError if dst does not exist."""
     return renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=RENAME_EXCHANGE)
