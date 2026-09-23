@@ -47,7 +47,7 @@ from collections import namedtuple
 from collections.abc import Sequence
 
 __all__ = ['RENAME_NOREPLACE', 'RENAME_EXCHANGE',
-           'renameat2', 'rename_noreplace', 'rename_exchange']
+           'renameat2', 'renameat', 'rename_noreplace', 'rename_exchange']
 
 _Environment = namedtuple('_Environment',
                           ('arch', 'native_supported',
@@ -641,11 +641,22 @@ def _renameat2_choose():
 
 @DynamicCallable
 def renameat2(src, dst, *, src_dir_fd=None, dst_dir_fd=None, flags=0):
-    """renameat2 - rename, replace or exchange a file relative to directory file descriptors.
+    """`renameat2` renames, moves, or exchanges files.
 
-    renameat2(src, dst, flags=0) will replace any existing target file.
-    renameat2(src, dst, flags=rename_ex.RENAME_NOREPLACE) will only rename to non-existing target.
-    renameat2(src, dst, flags=rename_ex.RENAME_EXCHANGE) will swap names of two files.
+    When `flags` is 0, it renames the source to the destination,
+    overwriting it if it exists.
+
+    When `flags` is `RENAME_NOREPLACE`, it renames the source to the
+    destination only if the destination does not exist.
+
+    When `flags` is `RENAME_EXCHANGE`, it atomically swaps the names
+    of two files.
+
+    When optional src_dir_fd and/or dst_dir_fd are provided, relative
+    paths are resolved based on the provided directory file
+    descriptors, or the current working directory if None or set to
+    AT_FDCWD.
+
     """
     _renameat2_choose()(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=flags)
 
@@ -708,12 +719,41 @@ Currently-used routine:                  {used_routine} ({renameat2.__wrapped__!
         "use_native": use_native})
     return d
 
-renameat = renameat2 # only optional "flags" is different
+def renameat(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+    """Renames files, overwriting existing destinations.
+
+    It renames the source to the destination, overwriting it if it
+    exists.
+
+    When optional src_dir_fd and/or dst_dir_fd are provided, relative
+    paths are resolved based on the provided directory file
+    descriptors, or the current working directory if None or set to
+    AT_FDCWD.
+
+    """
+    return renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=0)    
 
 def rename_noreplace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
-    """Rename a file in src to dst.  Raise some OSError if dst already exists."""
+    """Renames files without overwriting other files.
+
+    It renames the source to the destination only if the destination
+    does not exist.
+
+    When optional src_dir_fd and/or dst_dir_fd are provided, relative
+    paths are resolved based on the provided directory file
+    descriptors, or the current working directory if None or set to
+    AT_FDCWD.
+
+    """
     return renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=RENAME_NOREPLACE)
 
 def rename_exchange(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
-    """Exchange names of files in src and dst.  Raise some OSError if dst does not exist."""
+    """Swaps names of two files atomically.
+
+    When optional src_dir_fd and/or dst_dir_fd are provided, relative
+    paths are resolved based on the provided directory file
+    descriptors, or the current working directory if None or set to
+    AT_FDCWD.
+
+    """
     return renameat2(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd, flags=RENAME_EXCHANGE)
